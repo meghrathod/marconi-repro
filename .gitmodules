@@ -1,0 +1,3 @@
+[submodule "marconi"]
+	path = marconi
+	url = https://github.com/ruipeterpan/marconi
