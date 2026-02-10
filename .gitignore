@@ -1,0 +1,129 @@
+.env
+
+# Rust
+/target/
+/**/target/
+/**/*.rs.bk
+# Uncomment the next line if you want to ignore Cargo.lock (common for libraries)
+# Cargo.lock
+
+# Cargo registry / git checkouts (optional)
+.cargo/
+.cargo_vcs_info.json
+/.cargo/registry/
+/.cargo/git/
+
+# Binaries
+*.rlib
+*.rmeta
+*.dSYM
+*.exe
+*.dll
+*.so
+*.d
+*.pdb
+
+# IDE/editor
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# Python
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django/Flask
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+
+# Sphinx
+docs/_build/
+
+# Jupyter
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv / pipenv / poetry
+.python-version
+Pipfile.lock
+.poetry/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+env.bak/
+venv.bak/
+
+# mypy / pyre
+.mypy_cache/
+.pyre/
+
+# Editor directories and system files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
