@@ -1,20 +1,53 @@
+# ==============================================================================
+# docker-compose.yml — mlsys-marconi
+#
+# Defaults: 4x V100 32GB (TP=4, 128GB total). Override via .env.
+#
+# Services
+# --------
+#   sglang-server : SGLang inference server (GPU, always starts)
+#   bench         : Benchmark / evaluation shell (profile: bench)
+#   marconi-sim   : Trace-driven Marconi simulation (profile: sim)
+#
+# Quick reference
+# ---------------
+#   # Start the inference server (uses all 4 GPUs by default)
+#   docker compose up sglang-server
+#
+#   # Open an interactive benchmark shell once the server is healthy
+#   docker compose run --rm --profile bench bench
+#
+#   # Run Marconi simulation (CPU only, no GPU needed)
+#   docker compose run --rm --profile sim marconi-sim
+#
+#   # Override model / TP at launch time
+#   MODEL_NAME=Qwen/Qwen3-Next-80B-A3B-Instruct TENSOR_PARALLEL=4 docker compose up sglang-server
+# ==============================================================================
+
 services:
-  testbench:
+  # ----------------------------------------------------------------------------
+  # SGLang inference server (GPU)
+  # ----------------------------------------------------------------------------
+  sglang-server:
     build:
       context: .
       dockerfile: Dockerfile
+      target: sglang
+      args:
+        SGLANG_BRANCH: ${SGLANG_BRANCH:-}
+        SGLANG_VERSION: ${SGLANG_VERSION:-}
+        CUDA_SHORT: ${CUDA_SHORT:-cu124}
     ports:
-      - "8888:8888"  # Jupyter notebook port
+      - "${SGLANG_PORT:-30000}:30000"
     environment:
-      # Jupyter notebook configuration
-      - JUPYTER_ENABLE_LAB=yes
-      # Ensure CUDA paths are available
-      - CUDA_HOME=/usr/local/cuda
-      # NVIDIA runtime variables
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/workspace/.cache/huggingface
     volumes:
-      - .:/home/jovyan/work
+      - hf-cache:/workspace/.cache/huggingface
+      - ./results:/workspace/results
+      - ./traces:/workspace/traces
     deploy:
       resources:
         reservations:
@@ -22,7 +55,93 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    working_dir: /home/jovyan/work
-    command: start-notebook.sh --NotebookApp.ip='0.0.0.0' --NotebookApp.token='' --NotebookApp.password=''
+    # Shared memory and IPC for 4-way tensor parallelism (4x V100 32GB)
+    shm_size: "32gb"
+    ipc: host
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    command: >
+      python3 -m sglang.launch_server
+        --model ${MODEL_NAME:-ai21labs/Jamba-1.5-Mini}
+        --host 0.0.0.0
+        --port 30000
+        --tp ${TENSOR_PARALLEL:-4}
+        ${SGLANG_EXTRA_ARGS:-}
+
+  # ----------------------------------------------------------------------------
+  # Benchmarking shell (same SGLang image, interactive)
+  #
+  # Waits for sglang-server to be healthy, then drops you into a bash shell
+  # from which you can run bench_serving, trace replays, etc.
+  #
+  # Usage:
+  #   docker compose run --rm bench
+  #   # then inside the container:
+  #   python3 -m sglang.bench_serving \
+  #       --backend sglang --base-url http://sglang-server:30000 \
+  #       --dataset-name generated-shared-prefix --num-prompts 100
+  # ----------------------------------------------------------------------------
+  bench:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: sglang
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/workspace/.cache/huggingface
+      - SGLANG_SERVER_URL=http://sglang-server:30000
+    volumes:
+      - hf-cache:/workspace/.cache/huggingface
+      - ./results:/workspace/results
+      - ./traces:/workspace/traces
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      sglang-server:
+        condition: service_healthy
+    profiles:
+      - bench
+    entrypoint: ["bash"]
     stdin_open: true
     tty: true
+
+  # ----------------------------------------------------------------------------
+  # Marconi trace-driven simulation (CPU-only)
+  #
+  # Runs the upstream Marconi code (radix_cache_hybrid, config_tuner, etc.)
+  # for trace replay experiments without a GPU.
+  #
+  # Usage:
+  #   docker compose run --rm marconi-sim
+  #   # then inside the container:
+  #   cd marconi && bash run_all_experiments.sh
+  #   # or run unit tests:
+  #   pytest tests/test_marconi_eviction.py -v
+  # ----------------------------------------------------------------------------
+  marconi-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: marconi-sim
+    volumes:
+      - ./marconi:/workspace/marconi
+      - ./tests:/workspace/tests
+      - ./results:/workspace/results
+      - ./traces:/workspace/traces
+    profiles:
+      - sim
+    stdin_open: true
+    tty: true
+
+volumes:
+  hf-cache:
+    name: marconi-hf-cache

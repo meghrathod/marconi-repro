@@ -1,0 +1,16 @@
+# Extra runtime dependencies for the SGLang Docker target
+# (SGLang and its core deps are installed separately in the Dockerfile)
+
+# Trace download
+gdown>=4.7
+
+# Benchmarking / evaluation
+datasets
+openai
+
+# Testing
+pytest
+
+# Utilities
+tqdm>=4.60.0
+python-dotenv

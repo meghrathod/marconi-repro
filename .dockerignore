@@ -1,0 +1,50 @@
+# Version control
+.git
+.gitmodules
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*.egg-info
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments (host-side)
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Local env and secrets
+.env
+
+# Chameleon provisioning notebook (not needed inside container)
+setup-vm.ipynb
+
+# Marconi simulation artifacts (rebuilt inside container)
+marconi/logs/
+marconi/results/
+marconi/figures/
+marconi/traces/
+marconi/traces.tar.gz
+
+# Project results / traces (mounted as volumes)
+results/
+traces/
+
+# Documentation (not needed at runtime)
+llm-docs/
