@@ -4,5 +4,5 @@ This project is an attempt to reproduce the results of Marconi (https://arxiv.or
 
 The experiments designed in the system would be run on a Chameleon GPU instance with Ubuntu 22.04 with one or more A100 GPUs. Any code programmed must be developed with this constraint.
 
-We will be using uv for environment management and a virtual environment (located in `.venv`) directory. You may generate illustrations on this system using `matplotlib` which is installed in the current environment on the local system rather than cloud instance. You can also write mermaid diagrams directly into markdown files. All other code will be run in the cloud instance, so only do a Python build and lint tests on local system.
+We will be using uv for environment management and a virtual environment (located in `.venv`) directory. You may generate illustrations on this system using `matplotlib` which is installed in the current environment on the local system rather than cloud instance. You can also write mermaid diagrams directly into markdown files. You can run analysis of data locally if it is available on the dev system. All other code will be run in the cloud instance, so only do a Python build and lint tests on local system.
 
