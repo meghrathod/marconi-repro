@@ -6,13 +6,7 @@
 # Marconi CPU-based trace repro is run outside Docker per marconi/artifact_evaluation.md
 # (conda env + run_all_experiments.sh).
 #
-# Build examples
-# --------------
-#   docker compose build sglang-server
-#
-#   # or standalone:
-#   docker build --target sglang -t marconi-sglang \
-#       --build-arg SGLANG_BRANCH=support_mamba_radix_cache .
+# Build:  docker compose build sglang-server
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -42,22 +36,18 @@ WORKDIR /workspace
 
 # ------------------------------------------------------------------------------
 # Target: sglang — inference server + benchmarking (GPU)
-#
-# Uses uv for fast, reproducible Python environment management.
-# By default installs SGLang from PyPI; set SGLANG_BRANCH to build from a
-# specific git branch (e.g. support_mamba_radix_cache for PR #11214).
+# Versions pinned in this file; uses uv for Python/sglang install.
 # ------------------------------------------------------------------------------
 FROM base AS sglang
 
 # -- uv -----------------------------------------------------------------------
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# -- Configurable build args --------------------------------------------------
-ARG PYTHON_VERSION=3.11
-ARG SGLANG_VERSION=""
-ARG SGLANG_BRANCH=""
-ARG CUDA_SHORT=cu124
-ARG TORCH_VERSION=2.5
+# -- Pinned versions -----------------------------------------------------------
+ENV PYTHON_VERSION=3.11 \
+    SGLANG_VERSION=0.5.6.post2 \
+    CUDA_SHORT=cu124 \
+    TORCH_VERSION=2.5
 
 # -- Python + venv -------------------------------------------------------------
 RUN uv python install ${PYTHON_VERSION}
@@ -66,22 +56,9 @@ RUN uv venv /opt/venv --python ${PYTHON_VERSION}
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:${PATH}
 
-# -- Install SGLang ------------------------------------------------------------
-# Priority: SGLANG_VERSION (PyPI release) > SGLANG_BRANCH (git) > latest PyPI
-RUN set -ex; \
-    FL="https://flashinfer.ai/whl/${CUDA_SHORT}/torch${TORCH_VERSION}/flashinfer-python"; \
-    if [ -n "${SGLANG_VERSION}" ]; then \
-        echo "Installing SGLang ${SGLANG_VERSION} from PyPI"; \
-        uv pip install "sglang[all]==${SGLANG_VERSION}" --find-links "${FL}"; \
-    elif [ -n "${SGLANG_BRANCH}" ]; then \
-        echo "Installing SGLang from branch ${SGLANG_BRANCH}"; \
-        git clone --depth 1 -b "${SGLANG_BRANCH}" \
-            https://github.com/sgl-project/sglang.git /opt/sglang-src; \
-        uv pip install -e "/opt/sglang-src/python[all]" --find-links "${FL}"; \
-    else \
-        echo "Installing latest SGLang from PyPI"; \
-        uv pip install "sglang[all]" --find-links "${FL}"; \
-    fi
+# -- Install SGLang from PyPI (minimal; see docs.sglang.io/get_started/install.html)
+RUN uv pip install "sglang==${SGLANG_VERSION}" \
+    --find-links "https://flashinfer.ai/whl/${CUDA_SHORT}/torch${TORCH_VERSION}/flashinfer-python"
 
 # -- Extra runtime deps -------------------------------------------------------
 COPY requirements-docker.txt /tmp/requirements-docker.txt

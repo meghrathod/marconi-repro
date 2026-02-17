@@ -29,10 +29,6 @@ services:
       context: .
       dockerfile: Dockerfile
       target: sglang
-      args:
-        SGLANG_BRANCH: ${SGLANG_BRANCH:-}
-        SGLANG_VERSION: ${SGLANG_VERSION:-}
-        CUDA_SHORT: ${CUDA_SHORT:-cu124}
     ports:
       - "${SGLANG_PORT:-30000}:30000"
     environment:
