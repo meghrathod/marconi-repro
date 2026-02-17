@@ -1,27 +1,23 @@
 # ==============================================================================
 # docker-compose.yml — mlsys-marconi
 #
-# Defaults: 4x V100 32GB (TP=4, 128GB total). Override via .env.
+# Marconi CPU-based trace repro: follow marconi/artifact_evaluation.md (conda + run_all_experiments.sh).
 #
 # Services
 # --------
 #   sglang-server : SGLang inference server (GPU, always starts)
 #   bench         : Benchmark / evaluation shell (profile: bench)
-#   marconi-sim   : Trace-driven Marconi simulation (profile: sim)
 #
 # Quick reference
 # ---------------
-#   # Start the inference server (uses all 4 GPUs by default)
+#   # Start the inference server
 #   docker compose up sglang-server
 #
 #   # Open an interactive benchmark shell once the server is healthy
 #   docker compose run --rm --profile bench bench
 #
-#   # Run Marconi simulation (CPU only, no GPU needed)
-#   docker compose run --rm --profile sim marconi-sim
-#
-#   # Override model / TP at launch time
-#   MODEL_NAME=Qwen/Qwen3-Next-80B-A3B-Instruct TENSOR_PARALLEL=4 docker compose up sglang-server
+#   # Override model or tensor parallel size via env
+#   MODEL_NAME=... TENSOR_PARALLEL=... docker compose up sglang-server
 # ==============================================================================
 
 services:
@@ -55,7 +51,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    # Shared memory and IPC for 4-way tensor parallelism (4x V100 32GB)
     shm_size: "32gb"
     ipc: host
     ulimits:
@@ -111,34 +106,6 @@ services:
     profiles:
       - bench
     entrypoint: ["bash"]
-    stdin_open: true
-    tty: true
-
-  # ----------------------------------------------------------------------------
-  # Marconi trace-driven simulation (CPU-only)
-  #
-  # Runs the upstream Marconi code (radix_cache_hybrid, config_tuner, etc.)
-  # for trace replay experiments without a GPU.
-  #
-  # Usage:
-  #   docker compose run --rm marconi-sim
-  #   # then inside the container:
-  #   cd marconi && bash run_all_experiments.sh
-  #   # or run unit tests:
-  #   pytest tests/test_marconi_eviction.py -v
-  # ----------------------------------------------------------------------------
-  marconi-sim:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: marconi-sim
-    volumes:
-      - ./marconi:/workspace/marconi
-      - ./tests:/workspace/tests
-      - ./results:/workspace/results
-      - ./traces:/workspace/traces
-    profiles:
-      - sim
     stdin_open: true
     tty: true
 

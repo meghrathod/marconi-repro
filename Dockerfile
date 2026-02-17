@@ -1,21 +1,17 @@
 # ==============================================================================
 # Dockerfile — mlsys-marconi
 #
-# Multi-target build for Chameleon Cloud GPU instances (A100).
+# Build for GPU-backed inference.
 #
-# Targets
-# -------
-#   marconi-sim : Marconi trace-driven simulation (CPU-only, conda env)
-#   sglang      : SGLang inference server + benchmark tooling (GPU, uv)
+# Marconi CPU-based trace repro is run outside Docker per marconi/artifact_evaluation.md
+# (conda env + run_all_experiments.sh).
 #
 # Build examples
 # --------------
-#   docker compose build marconi-sim
 #   docker compose build sglang-server
 #
 #   # or standalone:
-#   docker build --target marconi-sim -t marconi-sim .
-#   docker build --target sglang      -t marconi-sglang \
+#   docker build --target sglang -t marconi-sglang \
 #       --build-arg SGLANG_BRANCH=support_mamba_radix_cache .
 # ==============================================================================
 
@@ -43,40 +39,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
-
-# ------------------------------------------------------------------------------
-# Target: marconi-sim — trace-driven simulation (CPU-only)
-#
-# Recreates the upstream marconi conda env.  Suitable for running the
-# experiments in marconi/run_all_experiments.sh and the unit tests in tests/.
-# ------------------------------------------------------------------------------
-FROM base AS marconi-sim
-
-# -- Miniconda -----------------------------------------------------------------
-ENV CONDA_DIR=/opt/conda
-RUN wget -qO /tmp/miniconda.sh \
-        https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
-    bash /tmp/miniconda.sh -b -p ${CONDA_DIR} && \
-    rm /tmp/miniconda.sh && \
-    ${CONDA_DIR}/bin/conda clean -afy
-
-ENV PATH=${CONDA_DIR}/bin:${PATH}
-
-# -- Conda environment from upstream spec -------------------------------------
-COPY marconi/environment.yml /tmp/environment.yml
-RUN conda env create -f /tmp/environment.yml && \
-    conda clean -afy && \
-    rm /tmp/environment.yml
-
-# Activate marconi env by default
-ENV PATH=/opt/conda/envs/marconi/bin:${PATH}
-SHELL ["conda", "run", "--no-capture-output", "-n", "marconi", "/bin/bash", "-c"]
-
-# -- Copy simulation code & tests ---------------------------------------------
-COPY marconi/ ./marconi/
-COPY tests/   ./tests/
-
-CMD ["conda", "run", "--no-capture-output", "-n", "marconi", "bash"]
 
 # ------------------------------------------------------------------------------
 # Target: sglang — inference server + benchmarking (GPU)
