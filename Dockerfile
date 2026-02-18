@@ -12,7 +12,7 @@
 # ------------------------------------------------------------------------------
 # Stage: base — CUDA 12.4 + Ubuntu 22.04 + common tooling
 # ------------------------------------------------------------------------------
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS base
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -23,13 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
-        git-lfs \
-        jq \
-        lsb-release \
-        software-properties-common \
         vim \
         wget \
-    && git lfs install \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
