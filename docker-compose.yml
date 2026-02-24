@@ -55,7 +55,7 @@ services:
         hard: -1
     command: >
       python3 -m sglang.launch_server
-        --model ${MODEL_NAME:-ai21labs/Jamba-1.5-Mini}
+        --model ${MODEL_NAME:-nvidia/Nemotron-H-8B-Base-8K}
         --host 0.0.0.0
         --port 30000
         --tp ${TENSOR_PARALLEL:-4}

@@ -6,7 +6,7 @@ This repository aims to replicate [Marconi's theoretical results](https://arxiv.
 
 ## Overview
 
-Marconi is a prefix caching system for **Hybrid LLMs** (Mamba + Transformer, e.g., Jamba). It introduces:
+Marconi is a prefix caching system for **Hybrid LLMs** (Mamba + Transformer, e.g., Nemotron-H). It introduces:
 
 - **Judicious admission**: Cache SSM states only at branch points and last decoded token
 - **FLOP-aware eviction**: Score = recency + α × flop_efficiency; evict lowest score
@@ -28,7 +28,7 @@ The [marconi/](marconi/) submodule contains the **trace-driven simulation** (no 
 
 ## Quick Start
 
-### Run Marconi simulation (no GPU)
+### 1. Marconi trace-driven simulation (CPU only, no GPU needed)
 
 ```bash
 conda env create -f marconi/environment.yml
@@ -38,20 +38,53 @@ cd marconi && bash run_all_experiments.sh
 
 See [marconi/artifact_evaluation.md](marconi/artifact_evaluation.md) for trace download and full instructions.
 
-### Run SGLang with hybrid model (GPU)
+### 2. SGLang inference server (bare-metal GPU node)
+
+Install SGLang with FlashInfer support (CUDA 12.4 + PyTorch 2.5):
 
 ```bash
-pip install sglang
-python3 -m sglang.launch_server --model Qwen/Qwen3-Next-80B-A3B-Instruct --tp 4
+pip install "sglang==0.5.6.post2" \
+    --find-links "https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python"
+pip install -r requirements.txt
+```
+
+Start the server (we use [nvidia/Nemotron-H-8B-Base-8K](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K) — a Mamba hybrid model):
+
+```bash
+export HF_TOKEN=<your_token>
+
+python3 -m sglang.launch_server \
+    --model nvidia/Nemotron-H-8B-Base-8K \
+    --host 0.0.0.0 \
+    --port 30000 \
+    --tp 4
+```
+
+Verify it's running:
+
+```bash
+curl http://localhost:30000/get_model_info
+```
+
+> **Tip:** Run the server in a `tmux` session so you can detach and run benchmarks in a second terminal.
+
+### 3. Run the trace replayer
+
+```bash
+# In a second terminal (or tmux pane)
+python3 src/trace_replayer.py --url http://localhost:30000
 ```
 
 ---
 
 ## Tests
 
-Run Marconi eviction tests (requires `conda activate marconi`):
 ```bash
+# Marconi eviction tests (conda env, no GPU)
 pytest tests/test_marconi_eviction.py -v
+
+# Trace replayer tests (SGLang server must be running)
+pytest tests/test_trace_replayer.py -v
 ```
 
 ---
@@ -62,3 +95,4 @@ pytest tests/test_marconi_eviction.py -v
 - [Marconi repo](https://github.com/ruipeterpan/marconi)
 - [SGLang](https://github.com/sgl-project/sglang)
 - [SGLang PR #11214 (Mamba radix cache)](https://github.com/sgl-project/sglang/pull/11214)
+- [Nemotron-H-8B-Base-8K on HuggingFace](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K)

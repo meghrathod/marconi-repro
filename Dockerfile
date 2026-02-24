@@ -57,8 +57,8 @@ RUN uv pip install "sglang==${SGLANG_VERSION}" \
     --find-links "https://flashinfer.ai/whl/${CUDA_SHORT}/torch${TORCH_VERSION}/flashinfer-python"
 
 # -- Extra runtime deps -------------------------------------------------------
-COPY requirements-docker.txt /tmp/requirements-docker.txt
-RUN uv pip install -r /tmp/requirements-docker.txt && rm /tmp/requirements-docker.txt
+COPY requirements.txt /tmp/requirements.txt
+RUN uv pip install -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 # -- Copy project code ---------------------------------------------------------
 COPY . .

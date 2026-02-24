@@ -1,5 +1,32 @@
-# Chameleon Cloud API client
+# ==============================================================================
+# requirements.txt — mlsys-marconi (bare-metal GPU setup)
+#
+# Install:  pip install -r requirements.txt
+# SGLang:   pip install "sglang==0.5.6.post2" \
+#               --find-links "https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python"
+# ==============================================================================
+
+# --------------- Core ML / Inference ---------------
+torch>=2.5
+transformers>=4.40
+
+# --------------- Data & Evaluation -----------------
+datasets
+openai
+aiohttp>=3.9
+
+# --------------- Trace download --------------------
+gdown>=4.7
+hf_xet  # required for HuggingFace XET-backed datasets (e.g. ShareGPT)
+
+# --------------- Chameleon Cloud -------------------
 python-chi
 ipywidgets
+
+# --------------- Testing ---------------------------
+pytest
+
+# --------------- Utilities -------------------------
 tqdm>=4.60.0
+python-dotenv
 uv
