@@ -4,6 +4,10 @@
 # Trace download
 gdown>=4.7
 
+# Trace replayer
+transformers>=4.40
+aiohttp>=3.9
+
 # Benchmarking / evaluation
 datasets
 openai
