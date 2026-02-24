@@ -89,7 +89,7 @@ Memory per node: `num_ssm_layers × mamba_state_size(d,n) + num_attn_layers × k
 
 ### 2.1 Recommended Model: Nemotron-H 8B
 
-**Model**: [`nvidia/Nemotron-H-8B-Base-4096`](https://huggingface.co/nvidia/Nemotron-H-8B-Base-4096)
+**Model**: [`nvidia/Nemotron-H-8B-Base-8K`](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K)
 
 | Config | Paper (Mamba2-Hybrid 7B) | Nemotron-H 8B | Match? |
 |---|---|---|---|
@@ -136,11 +136,11 @@ This ensures apples-to-apples comparison between simulated and live results.
 
 ```bash
 # Option A: via docker-compose (recommended)
-MODEL_NAME=nvidia/Nemotron-H-8B-Base-4096 TENSOR_PARALLEL=1 docker compose up sglang-server
+MODEL_NAME=nvidia/Nemotron-H-8B-Base-8K TENSOR_PARALLEL=1 docker compose up sglang-server
 
 # Option B: in container directly
 python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-4096 \
+    --model nvidia/Nemotron-H-8B-Base-8K \
     --host 0.0.0.0 --port 30000 \
     --tp 1
 ```
@@ -165,7 +165,7 @@ curl http://localhost:30000/v1/models
 curl -s http://localhost:30000/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "nvidia/Nemotron-H-8B-Base-4096",
+    "model": "nvidia/Nemotron-H-8B-Base-8K",
     "prompt": "The capital of France is",
     "max_tokens": 20,
     "temperature": 0
@@ -175,7 +175,7 @@ curl -s http://localhost:30000/v1/completions \
 curl -s http://localhost:30000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "nvidia/Nemotron-H-8B-Base-4096",
+    "model": "nvidia/Nemotron-H-8B-Base-8K",
     "messages": [
       {"role": "user", "content": "What is 2+2?"}
     ],
@@ -247,12 +247,12 @@ Build a custom trace replayer that:
 ```bash
 # Run 1: No radix cache (vanilla inference)
 python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-4096 \
+    --model nvidia/Nemotron-H-8B-Base-8K \
     --tp 1 --disable-radix-cache
 
 # Run 2: With radix cache (LRU eviction — this is "SGLang+" baseline)
 python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-4096 \
+    --model nvidia/Nemotron-H-8B-Base-8K \
     --tp 1
 
 # Run 3: Quick bench_serving sanity check (generated workload)
@@ -311,14 +311,14 @@ There is a **WIP implementation** of Marconi in SGLang: [PR #17898](https://gith
 
 ```bash
 # With Marconi eviction (via docker-compose)
-MODEL_NAME=nvidia/Nemotron-H-8B-Base-4096 \
+MODEL_NAME=nvidia/Nemotron-H-8B-Base-8K \
 TENSOR_PARALLEL=1 \
 SGLANG_EXTRA_ARGS="--enable-marconi --marconi-eff-weight 0.5" \
 docker compose up sglang-server
 
 # Or directly
 python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-4096 \
+    --model nvidia/Nemotron-H-8B-Base-8K \
     --tp 1 \
     --enable-marconi \
     --marconi-eff-weight 0.5
@@ -352,7 +352,7 @@ Based on the trace-driven simulation and the paper:
 | Marconi repo (simulation) | [ruipeterpan/marconi](https://github.com/ruipeterpan/marconi) |
 | Marconi in SGLang (WIP PR) | [PR #17898](https://github.com/sgl-project/sglang/pull/17898) |
 | SGLang MambaRadixCache | [PR #11214](https://github.com/sgl-project/sglang/pull/11214) |
-| Nemotron-H 8B (HuggingFace) | [nvidia/Nemotron-H-8B-Base-4096](https://huggingface.co/nvidia/Nemotron-H-8B-Base-4096) |
+| Nemotron-H 8B (HuggingFace) | [nvidia/Nemotron-H-8B-Base-8K](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K) |
 | NVIDIA Mamba-2 Hybrid paper | [arXiv:2406.07887](https://arxiv.org/abs/2406.07887) |
 | Original Mamba-2 Hybrid model | [nvidia/mamba2-hybrid-8b-3t-128k](https://huggingface.co/nvidia/mamba2-hybrid-8b-3t-128k) |
 | Artifact evaluation | [marconi/artifact_evaluation.md](../marconi/artifact_evaluation.md) |

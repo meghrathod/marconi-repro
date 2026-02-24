@@ -17,7 +17,7 @@ Usage:
   python src/trace_replayer.py \
       --trace traces/lmsys_sps=1_nums=100.jsonl \
       --server-url http://localhost:30000 \
-      --model nvidia/Nemotron-H-8B-Base-4096 \
+      --model nvidia/Nemotron-H-8B-Base-8K \
       --output results/baseline_lru.jsonl \
       --speed-factor 0 \
       --max-requests 50
@@ -427,7 +427,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="nvidia/Nemotron-H-8B-Base-4096",
+        default="nvidia/Nemotron-H-8B-Base-8K",
         help="Model name for the completions API.",
     )
     parser.add_argument(
