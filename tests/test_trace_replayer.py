@@ -26,6 +26,9 @@ from trace_replayer import (
     compute_sleep_durations,
     write_results,
     ReplayResult,
+    ServerMetricsSnapshot,
+    _parse_prometheus_text,
+    parse_args,
 )
 
 
@@ -199,6 +202,7 @@ def test_write_results(tmp_path: Path):
     obj = json.loads(lines[0])
     assert obj["session_id"] == 0
     assert obj["ttft_ms"] == 12.5
+    assert obj["cached_tokens"] == 0
     assert obj["error"] is None
 
 
@@ -209,7 +213,7 @@ def test_dry_run_produces_results(trace_file: Path):
     from trace_replayer import replay_trace
 
     requests = load_trace(trace_file)
-    results = asyncio.run(
+    results, server_metrics_delta = asyncio.run(
         replay_trace(
             requests=requests,
             server_url="http://localhost:99999",  # won't be contacted
@@ -224,3 +228,81 @@ def test_dry_run_produces_results(trace_file: Path):
     assert all(r.error is None for r in results)
     assert results[0].session_id == 0
     assert results[0].num_input_tokens == 5
+    assert server_metrics_delta == {}
+
+
+def test_replay_result_cache_fields():
+    """ReplayResult should include cache metrics and serialize them."""
+    r = ReplayResult(
+        session_id=0,
+        turn_id=0,
+        ts=0.0,
+        num_input_tokens=100,
+        num_output_tokens=20,
+        prompt_len=100,
+        ttft_ms=50.0,
+        total_latency_ms=100.0,
+        generated_tokens=20,
+        cached_tokens=60,
+        prompt_tokens=100,
+        completion_tokens=20,
+        cache_hit_pct=60.0,
+    )
+    from dataclasses import asdict
+
+    d = asdict(r)
+    assert d["cached_tokens"] == 60
+    assert d["prompt_tokens"] == 100
+    assert d["completion_tokens"] == 20
+    assert d["cache_hit_pct"] == 60.0
+
+
+def test_parse_prometheus_text():
+    """Prometheus text format is parsed into a dict."""
+    text = """
+# HELP sglang_cache_hit_rate Cache hit rate
+# TYPE sglang_cache_hit_rate gauge
+sglang:cache_hit_rate 0.75
+sglang:cache_hit_count 150
+sglang:cache_query_count 200
+# HELP other_metric Some other metric
+other_metric{label="foo"} 42.5
+"""
+    parsed = _parse_prometheus_text(text)
+    assert parsed["sglang:cache_hit_rate"] == 0.75
+    assert parsed["sglang:cache_hit_count"] == 150.0
+    assert parsed["sglang:cache_query_count"] == 200.0
+    assert parsed["other_metric"] == 42.5
+
+
+def test_directory_mode_args_mutually_exclusive():
+    """--trace and --trace-dir are mutually exclusive."""
+    with pytest.raises(SystemExit):
+        parse_args(["--trace", "a.jsonl", "--trace-dir", "traces/"])
+
+
+def test_directory_mode_requires_one():
+    """At least one of --trace or --trace-dir is required."""
+    with pytest.raises(SystemExit):
+        parse_args([])
+
+
+def test_directory_discovery(tmp_path: Path):
+    """Directory mode discovers all .jsonl files."""
+    for name in ["a.jsonl", "b.jsonl", "c.txt"]:
+        (tmp_path / name).write_text('{"session_id":0,"turn_id":0,"ts":0,'
+                                     '"num_input_tokens":1,"num_output_tokens":1,'
+                                     '"input_tokens":[1],"output_tokens":[2]}\n')
+    found = sorted(tmp_path.glob("*.jsonl"))
+    assert len(found) == 2
+    assert found[0].name == "a.jsonl"
+    assert found[1].name == "b.jsonl"
+
+
+def test_no_stream_arg():
+    """--no-stream flag is parsed correctly."""
+    args = parse_args(["--trace", "test.jsonl", "--no-stream"])
+    assert args.no_stream is True
+
+    args = parse_args(["--trace", "test.jsonl"])
+    assert args.no_stream is False
