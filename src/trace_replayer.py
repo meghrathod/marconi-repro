@@ -260,11 +260,16 @@ async def send_completion_request_streaming(
                     break
                 try:
                     chunk = json.loads(data_str)
+                    # Extract final usage if present (some sglang versions include it)
+                    usage = chunk.get("usage")
+                    if usage and "completion_tokens" in usage:
+                        generated_tokens = usage["completion_tokens"]
                     choices = chunk.get("choices", [])
                     if choices and choices[0].get("text"):
                         if first_token_time is None:
                             first_token_time = time.perf_counter()
-                        generated_tokens += 1
+                        if not usage:
+                            generated_tokens += 1
                 except json.JSONDecodeError:
                     continue
 

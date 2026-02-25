@@ -70,10 +70,38 @@ curl http://localhost:30000/get_model_info
 
 ### 3. Run the trace replayer
 
+#### Single trace
+
 ```bash
-# In a second terminal (or tmux pane)
-python3 src/trace_replayer.py --url http://localhost:30000
+# Streaming mode — precise TTFT measurement
+python3 src/trace_replayer.py \
+    --trace traces/lmsys_sps=1_nums=100.jsonl \
+    --server-url http://localhost:30000 \
+    --output results/baseline_streaming.jsonl
+
+# Non-streaming mode — captures cached_tokens per request
+python3 src/trace_replayer.py \
+    --trace traces/lmsys_sps=1_nums=100.jsonl \
+    --no-stream \
+    --server-url http://localhost:30000 \
+    --output results/baseline_cache.jsonl
 ```
+
+#### Directory mode
+
+Replay every `.jsonl` trace in a directory, saving per-trace results:
+
+```bash
+python3 src/trace_replayer.py \
+    --trace-dir traces/ \
+    --output-dir results/batch/ \
+    --no-stream \
+    --server-url http://localhost:30000
+```
+
+Each trace produces a separate result file in `--output-dir` (e.g., `results/batch/lmsys_sps=1_nums=100.jsonl`).
+
+> **Note:** Server-level cache metrics from `/metrics` are scraped before and after each replay. Start the server with `--enable-metrics` to enable this.
 
 ---
 
@@ -83,7 +111,7 @@ python3 src/trace_replayer.py --url http://localhost:30000
 # Marconi eviction tests (conda env, no GPU)
 pytest tests/test_marconi_eviction.py -v
 
-# Trace replayer tests (SGLang server must be running)
+# Trace replayer tests (no server needed — tests use dry-run and unit tests)
 pytest tests/test_trace_replayer.py -v
 ```
 
