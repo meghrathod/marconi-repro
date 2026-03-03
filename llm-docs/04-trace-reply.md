@@ -11,14 +11,14 @@ flowchart LR
     C -->|measure| D["Metrics\n(TTFT, cache hits, throughput)"]
 ```
 
-1. **[generate_trace.py](file:///Users/megh/nyu/research/mlsys-marconi/marconi/utils/generate_trace.py)** converts real conversation datasets into deterministic, **pre-tokenized request traces** (JSONL files).
-2. **[trace_replayer.py](file:///Users/megh/nyu/research/mlsys-marconi/src/trace_replayer.py)** replays those traces against a live SGLang server, respecting request timing, and collects performance metrics.
+1. **[generate_trace.py](../marconi/utils/generate_trace.py)** converts real conversation datasets into deterministic, **pre-tokenized request traces** (JSONL files).
+2. **[trace_replayer.py](../src/trace_replayer.py)** replays those traces against a live SGLang server, respecting request timing, and collects performance metrics.
 
 This two-stage design decouples **workload definition** from **server benchmarking** — you generate traces once and replay them against different server configs (baseline vs. Marconi) for apples-to-apples comparison.
 
 ---
 
-## Part 1: The Trace Generator ([generate_trace.py](file:///Users/megh/nyu/research/mlsys-marconi/marconi/utils/generate_trace.py))
+## Part 1: The Trace Generator ([generate_trace.py](../marconi/utils/generate_trace.py))
 
 ### What It Does
 
@@ -74,7 +74,7 @@ For each **session** (conversation):
 |-------|---------|
 | `session_id` | Identifies the conversation session |
 | `turn_id` | Which turn within the session (0 = first) |
-| [ts](file:///Users/megh/nyu/research/mlsys-marconi/src/trace_replayer.py#557-566) | When this request should be sent (seconds from trace start) |
+| `ts` | When this request should be sent (seconds from trace start) |
 | `num_input_tokens` | Count of `input_tokens` (history + current input) |
 | `num_output_tokens` | Count of `output_tokens` (what the LLM originally produced) |
 | `input_tokens` | Full token ID array — grows each turn as history accumulates |
@@ -95,13 +95,13 @@ Each request shares a **growing prefix** with its predecessors in the same sessi
 
 ### SWE-Bench: Special Handling
 
-The [SWE-Agent](file:///Users/megh/nyu/research/mlsys-marconi/marconi/utils/generate_trace.py#L237-L318) trace has a unique feature — **observation collapsing** (line 303-304). Following the SWE-Agent paper, observations older than the last 5 turns are collapsed (the user/environment message is removed from the history). This simulates how code agents manage context window limits.
+The SWE-Agent trace has a unique feature — **observation collapsing**. Following the SWE-Agent paper, observations older than the last 5 turns are collapsed (the user/environment message is removed from the history). This simulates how code agents manage context window limits.
 
 The inter-turn delay for SWE-Bench uses `np.random.poisson(avg_response_time)` instead of typing speed — modeling the time an agent takes to execute actions, not a human typing.
 
 ---
 
-## Part 2: The Trace Replayer ([trace_replayer.py](file:///Users/megh/nyu/research/mlsys-marconi/src/trace_replayer.py))
+## Part 2: The Trace Replayer ([trace_replayer.py](../src/trace_replayer.py))
 
 ### What It Does
 
@@ -136,15 +136,15 @@ flowchart TD
 
 ### How Requests Are Sent
 
-1. **Timing**: [compute_sleep_durations](file:///Users/megh/nyu/research/mlsys-marconi/src/trace_replayer.py#L179-L201) calculates the delay between consecutive requests based on [ts](file:///Users/megh/nyu/research/mlsys-marconi/src/trace_replayer.py#557-566) deltas from the trace. `speed_factor=0` means fire ASAP (stress test), `1.0` means real-time replay.
+1. **Timing**: `compute_sleep_durations` calculates the delay between consecutive requests based on `ts` deltas from the trace. `speed_factor=0` means fire ASAP (stress test), `1.0` means real-time replay.
 
-2. **Prompt construction**: In **token-ids mode** (default), the raw `input_tokens` array is sent directly as the [prompt](file:///Users/megh/nyu/research/mlsys-marconi/src/trace_replayer.py#159-172) field — SGLang accepts token ID arrays. In `--text-mode`, token IDs are decoded back to text via the Llama-2 tokenizer.
+2. **Prompt construction**: In **token-ids mode** (default), the raw `input_tokens` array is sent directly as the `prompt` field — SGLang accepts token ID arrays. In `--text-mode`, token IDs are decoded back to text via the tokenizer specified by `TOKENIZER_MODEL` env var.
 
 3. **Output capping**: `max_tokens = min(req.num_output_tokens, --max-output-tokens)` — ensures the server generates roughly the same amount of output as the original conversation.
 
 ### Metrics Collected
 
-Per-request ([ReplayResult](file:///Users/megh/nyu/research/mlsys-marconi/src/trace_replayer.py#76-95)):
+Per-request (`ReplayResult`):
 - **TTFT** (streaming mode) or total latency
 - **`cached_tokens`** (non-streaming mode) — how many prompt tokens were served from cache
 - **`cache_hit_pct`** = `cached_tokens / prompt_tokens × 100`
