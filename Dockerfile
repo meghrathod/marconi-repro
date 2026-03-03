@@ -12,7 +12,7 @@
 # ------------------------------------------------------------------------------
 # Stage: base — CUDA 12.4 + Ubuntu 22.04 + common tooling
 # ------------------------------------------------------------------------------
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -53,8 +53,7 @@ ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:${PATH}
 
 # -- Install SGLang from PyPI (minimal; see docs.sglang.io/get_started/install.html)
-RUN uv pip install "sglang==${SGLANG_VERSION}" \
-    --find-links "https://flashinfer.ai/whl/${CUDA_SHORT}/torch${TORCH_VERSION}/flashinfer-python"
+RUN uv pip install sglang
 
 # -- Extra runtime deps -------------------------------------------------------
 COPY requirements.txt /tmp/requirements.txt

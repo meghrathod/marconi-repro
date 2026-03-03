@@ -57,7 +57,7 @@ python3 -m sglang.launch_server \
     --model nvidia/Nemotron-H-8B-Base-8K \
     --host 0.0.0.0 \
     --port 30000 \
-    --tp 4
+    --tp 1
 ```
 
 Verify it's running:
