@@ -58,7 +58,8 @@ services:
         --model ${MODEL_NAME:-nvidia/Nemotron-H-8B-Base-8K}
         --host 0.0.0.0
         --port 30000
-        --tp ${TENSOR_PARALLEL:-4}
+        --tp ${TENSOR_PARALLEL:-1}
+        --enable-metrics
         ${SGLANG_EXTRA_ARGS:-}
 
   # ----------------------------------------------------------------------------

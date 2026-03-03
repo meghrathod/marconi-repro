@@ -43,6 +43,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -52,6 +53,8 @@ from typing import Any
 
 import aiohttp
 from tqdm import tqdm
+
+TOKENIZER_MODEL = os.environ.get("TOKENIZER_MODEL", "meta-llama/Llama-2-7b-hf")
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +146,7 @@ def load_trace(trace_path: str | Path) -> list[TraceRequest]:
 
 
 def decode_tokens(token_ids: list[int], tokenizer=None) -> str:
-    """Decode token IDs to text using the Llama-2-7b-hf tokenizer.
+    """Decode token IDs to text using the tokenizer specified by TOKENIZER_MODEL.
 
     Only used in ``--text-mode``.
     """
@@ -151,7 +154,7 @@ def decode_tokens(token_ids: list[int], tokenizer=None) -> str:
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(
-            "meta-llama/Llama-2-7b-hf", use_fast=True
+            TOKENIZER_MODEL, use_fast=True
         )
     return tokenizer.decode(token_ids, skip_special_tokens=True)
 
@@ -445,7 +448,10 @@ async def replay_trace(
     dry_run: bool,
     no_stream: bool = False,
 ) -> tuple[list[ReplayResult], dict[str, Any]]:
-    """Replay trace requests against SGLang, returning per-request metrics.
+    """Replay trace requests sequentially against SGLang.
+
+    Matches the paper's trace-driven simulation which also processes
+    requests one at a time in timestamp order.
 
     Returns:
         A tuple of (results, server_metrics_delta) where server_metrics_delta
@@ -468,7 +474,7 @@ async def replay_trace(
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(
-            "meta-llama/Llama-2-7b-hf", use_fast=True
+            TOKENIZER_MODEL, use_fast=True
         )
 
     if dry_run:
@@ -736,6 +742,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=256,
         help="Cap on max_tokens per request (default: 256).",
     )
+
     parser.add_argument(
         "--dry-run",
         action="store_true",
