@@ -104,6 +104,8 @@ class ServerMetricsSnapshot:
     cache_hit_rate: float = 0.0
     cache_hit_count: float = 0.0
     cache_query_count: float = 0.0
+    ttft_sum: float = 0.0
+    ttft_count: float = 0.0
     raw_metrics: dict[str, float] = field(default_factory=dict)
 
 
@@ -340,7 +342,7 @@ async def send_completion_request_non_streaming(
 
     t_end = time.perf_counter()
     result.total_latency_ms = (t_end - t_start) * 1000
-    result.ttft_ms = result.total_latency_ms  # non-streaming: TTFT ≈ total
+    # TTFT is set externally from Prometheus metrics delta (not approximated)
 
     # Extract generated text length as proxy for token count
     choices = data.get("choices", [])
@@ -430,6 +432,18 @@ async def fetch_server_metrics(
             snapshot.cache_query_count = parsed[key]
             break
 
+    # Extract TTFT histogram metrics for per-request TTFT computation
+    for key in ("sglang:time_to_first_token_seconds_sum",
+                "sglang_time_to_first_token_seconds_sum"):
+        if key in parsed:
+            snapshot.ttft_sum = parsed[key]
+            break
+    for key in ("sglang:time_to_first_token_seconds_count",
+                "sglang_time_to_first_token_seconds_count"):
+        if key in parsed:
+            snapshot.ttft_count = parsed[key]
+            break
+
     return snapshot
 
 
@@ -480,7 +494,7 @@ async def replay_trace(
     if dry_run:
         for i, req in enumerate(tqdm(requests, desc="Dry run")):
             prompt = build_prompt(req, text_mode, tokenizer)
-            max_tok = min(req.num_output_tokens, max_output_tokens)
+            max_tok = max_output_tokens
             result = ReplayResult(
                 session_id=req.session_id,
                 turn_id=req.turn_id,
@@ -509,13 +523,16 @@ async def replay_trace(
 
         logger.info("Replaying %d requests (%s mode)", len(requests), mode_label)
 
+        # Track TTFT metrics for per-request TTFT via Prometheus delta
+        prev_ttft = await fetch_server_metrics(session, server_url)
+
         for i, req in enumerate(tqdm(requests, desc="Replaying")):
             # Inter-request delay
             if sleep_durations[i] > 0:
                 await asyncio.sleep(sleep_durations[i])
 
             prompt = build_prompt(req, text_mode, tokenizer)
-            max_tok = min(req.num_output_tokens, max_output_tokens)
+            max_tok = max_output_tokens
 
             result = await send_fn(
                 session=session,
@@ -530,6 +547,15 @@ async def replay_trace(
             result.ts = req.ts
             result.num_input_tokens = req.num_input_tokens
             result.num_output_tokens = req.num_output_tokens
+
+            # Compute per-request TTFT from Prometheus metrics delta
+            cur_ttft = await fetch_server_metrics(session, server_url)
+            delta_count = cur_ttft.ttft_count - prev_ttft.ttft_count
+            if delta_count > 0 and result.ttft_ms == 0.0:
+                result.ttft_ms = (
+                    (cur_ttft.ttft_sum - prev_ttft.ttft_sum) / delta_count
+                ) * 1000
+            prev_ttft = cur_ttft
 
             results.append(result)
 
@@ -712,10 +738,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "Each trace produces <output-dir>/<trace_stem>.jsonl.",
     )
     parser.add_argument(
-        "--no-stream",
+        "--stream",
         action="store_true",
-        help="Use non-streaming completions API to capture cached_tokens "
-        "per request. Default is streaming (precise TTFT, no cache data).",
+        default=False,
+        help="Use streaming completions API for client-side TTFT measurement. "
+        "Default is non-streaming (reliable token counts + server TTFT "
+        "from Prometheus).",
     )
     parser.add_argument(
         "--text-mode",
@@ -740,7 +768,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-output-tokens",
         type=int,
         default=256,
-        help="Cap on max_tokens per request (default: 256).",
+        help="Blanket max_tokens for all requests (default: 256).",
     )
 
     parser.add_argument(
@@ -781,7 +809,7 @@ def _replay_single_trace(
             speed_factor=args.speed_factor,
             text_mode=args.text_mode,
             dry_run=args.dry_run,
-            no_stream=args.no_stream,
+            no_stream=not args.stream,
         )
     )
 

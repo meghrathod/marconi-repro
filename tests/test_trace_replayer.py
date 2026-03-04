@@ -299,10 +299,10 @@ def test_directory_discovery(tmp_path: Path):
     assert found[1].name == "b.jsonl"
 
 
-def test_no_stream_arg():
-    """--no-stream flag is parsed correctly."""
-    args = parse_args(["--trace", "test.jsonl", "--no-stream"])
-    assert args.no_stream is True
+def test_stream_arg():
+    """--stream flag is parsed correctly (default is non-streaming)."""
+    args = parse_args(["--trace", "test.jsonl", "--stream"])
+    assert args.stream is True
 
     args = parse_args(["--trace", "test.jsonl"])
-    assert args.no_stream is False
+    assert args.stream is False
