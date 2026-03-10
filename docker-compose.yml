@@ -76,36 +76,36 @@ services:
   #       --backend sglang --base-url http://sglang-server:30000 \
   #       --dataset-name generated-shared-prefix --num-prompts 100
   # ----------------------------------------------------------------------------
-  bench:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: sglang
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - HF_TOKEN=${HF_TOKEN:-}
-      - HF_HOME=/workspace/.cache/huggingface
-      - SGLANG_SERVER_URL=http://sglang-server:30000
-    volumes:
-      - hf-cache:/workspace/.cache/huggingface
-      - ./results:/workspace/results
-      - ./traces:/workspace/traces
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    depends_on:
-      sglang-server:
-        condition: service_healthy
-    profiles:
-      - bench
-    entrypoint: ["bash"]
-    stdin_open: true
-    tty: true
+  # bench:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #     target: sglang
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  #     - HF_TOKEN=${HF_TOKEN:-}
+  #     - HF_HOME=/workspace/.cache/huggingface
+  #     - SGLANG_SERVER_URL=http://sglang-server:30000
+  #   volumes:
+  #     - hf-cache:/workspace/.cache/huggingface
+  #     - ./results:/workspace/results
+  #     - ./traces:/workspace/traces
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   depends_on:
+  #     sglang-server:
+  #       condition: service_healthy
+  #   profiles:
+  #     - bench
+  #   entrypoint: ["bash"]
+  #   stdin_open: true
+  #   tty: true
 
   # ----------------------------------------------------------------------------
   # Observability
@@ -132,6 +132,8 @@ services:
       - GF_AUTH_DISABLE_LOGIN_FORM=true
     volumes:
       - grafana-storage:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
   hf-cache:

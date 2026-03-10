@@ -1,3 +1,7 @@
 [submodule "marconi"]
 	path = marconi
 	url = https://github.com/ruipeterpan/marconi
+[submodule "sglang"]
+	path = sglang
+	url = https://github.com/abdelfattah-lab/sglang.git
+	branch = marconi-integration

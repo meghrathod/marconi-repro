@@ -72,4 +72,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -sf http://localhost:30000/health || exit 1
 
 CMD ["python3", "-m", "sglang.launch_server", \
-     "--host", "0.0.0.0", "--port", "30000"]
+     "--host", "0.0.0.0", "--port", "30000", "--enable-metrics", "--enable-cache-metrics"]

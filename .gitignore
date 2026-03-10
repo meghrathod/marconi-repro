@@ -129,3 +129,4 @@ venv.bak/
 Thumbs.db
 
 results/
+traces/
