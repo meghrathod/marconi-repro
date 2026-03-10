@@ -48,16 +48,12 @@ pip install "sglang==0.5.6.post2" \
 pip install -r requirements.txt
 ```
 
-Start the server (we use [nvidia/Nemotron-H-8B-Base-8K](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K) — a Mamba hybrid model):
+Start the server (we use [nvidia/Nemotron-H-8B-Base-8K](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K) — a Mamba hybrid model), we are using the PR [#20045](https://github.com/sgl-project/sglang/pull/20045) to run Marconi eviction policy. After cloning the repo with submodules, we run sglang server from source.
 
 ```bash
 export HF_TOKEN=<your_token>
 
-python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-8K \
-    --host 0.0.0.0 \
-    --port 30000 \
-    --tp 1
+PYTHONPATH=$(pwd)/sglang/python uv run --project . python3 -m sglang.launch_server --model-path nvidia/Nemotron-H-8B-Base-8K --radix-eviction-policy marconi --marconi-eff-weight 0.7 --port 30000
 ```
 
 Verify it's running:

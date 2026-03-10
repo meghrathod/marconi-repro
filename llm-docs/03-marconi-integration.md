@@ -1,361 +1,209 @@
-# Marconi Integration: From Simulation to Live Inference
+# Marconi Integration in SGLang: A Comprehensive Guide
 
-This document outlines the **immediate next steps** for reproducing [Marconi](https://arxiv.org/abs/2411.19379) results in a live [SGLang](https://github.com/sgl-project/sglang) inference system, starting from a working sglang server Docker image.
+This document explains the integration of the **Marconi FLOP-aware Cache Eviction Policy** into SGLang for Hybrid Large Language Models (LLMs), drawing from the official PR by the `abdelfattah-lab` and the Marconi research paper (arXiv:2411.19379). To fully grasp the integration, we first break down foundational concepts including Transformers, SSMs, and SGLang's memory management.
 
-> [!NOTE]
-> The Marconi trace-driven simulation (CPU-only, conda env) has already been verified and is producing correct graphs. This document focuses on the **live GPU inference** path.
+## 1. Foundation: Transformers and Attention
+### What is Attention?
+The Transformer architecture revolutionized sequence modeling by replacing recurrence with **Self-Attention**. Self-Attention allows a model to weigh the importance of all other tokens in a sequence when processing a specific token, giving it deep contextual understanding.
+
+**Example:** Consider the sentence: *"The bank of the river was muddy, so the bank closed early."* 
+- The first "bank" refers to a riverbank.
+- The second "bank" refers to a financial institution. 
+Self-Attention allows the model to look at surrounding words like "river" and "muddy" for the first "bank", and "closed early" for the second "bank", thus understanding the completely different contexts of the exact same word.
+
+### QKV (Query, Key, Value)
+At the heart of self-attention are three vectors generated for each token:
+- **Query (Q):** What the current token is "looking for". (e.g., "bank" asking, "What context am I in?")
+- **Key (K):** What the token "has" (its label or index). (e.g., "river" advertising, "I am a body of water.")
+- **Value (V):** The actual content or meaning the token contributes. (e.g., the conceptual meaning of a river environment).
+
+**How it works step-by-step:**
+1. The Query for "bank" is compared (via dot product) against the Keys of all other words: "The", "river", "was", etc.
+2. High similarity between "bank" (Q) and "river" (K) produces a high **attention score**.
+3. These scores are converted to probabilities (using softmax).
+4. The probabilities are multiplied by the Value (V) of each word. The final representation for "bank" becomes heavily weighted by the Value of "river", helping the model understand it means "riverbank".
+
+**Crucially**, Transformers suffer from quadratic computational complexity ($O(N^2)$) relative to sequence length $N$ because every token must compute its QKV dot products against every other token in the sequence.
+
+### What are Attention Heads and KV Heads?
+In modern Transformers, a single token doesn't just do *one* QKV lookup. Instead, it splits its embedding into multiple parallel "heads." This allows the model to look at different parts of the sentence simultaneously (e.g., one head looks at grammar, one head looks at sentiment, one head tracks pronouns).
+
+- **Attention Heads (Queries):** Numerically, a "Head" is simply a learned linear projection (a matrix multiplication) that maps a token's high-dimensional embedding into a smaller, specialized vector space (the `head_dim`). 
+  - **Example:** If $h$ (hidden size) is 4096 and the model has 32 Attention Heads, each token is multiplied by 32 different, independent weight matrices. This produces 32 separate Query vectors, each of dimension 128 ($4096 / 32$). The model learns through training that one subspace might mathematically attend to nearest-neighbors, another to sentence subjects, etc. No human programs a "grammar head"; they are just 32 mathematically independent $h \times d$ projection matrices operating in parallel.
+- **KV Heads (Keys & Values):** Similarly, these are the independent projection matrices that generate the Key and Value vectors for the vocabulary. The 32 Query vectors will compute dot products against the Key vectors to generate attention scores.
+
+#### Evolution of Heads (MHA vs. MQA vs. GQA)
+Historically, the number of KV Heads was the same as the number of Attention Heads. But as models grew, storing that massive KV cache became a memory bottleneck.
+1. **Multi-Head Attention (MHA):** 32 Attention Heads $\rightarrow$ 32 KV Heads. (High quality, but huge memory).
+2. **Multi-Query Attention (MQA):** 32 Attention Heads $\rightarrow$ 1 single shared KV Head. (Extremely memory efficient, but slightly lower quality).
+3. **Grouped-Query Attention (GQA):** The modern compromise. 32 Attention Heads $\rightarrow$ 8 KV Heads. Every 4 Attention Queries share 1 KV Memory. (Great balance of memory efficiency and quality).
+
+The Marconi FLOP equations explicitly use $k$ (KV heads) and $a$ (Attention heads) because models like Qwen3.5 heavily rely on GQA to save memory!
+
+## 2. Beyond Transformers: State Space Models (SSMs) and Mamba
+### What are SSMs?
+State Space Models (SSMs) are mathematical models used to describe dynamic systems. In deep learning, they map an input sequence to a latent state representation, which then predicts the output. 
+
+### Mamba and Continuous vs. Discrete States
+**Mamba** is a specialized, selective SSM (S6) that makes the state transition parameters input-dependent. Unlike Transformers, SSMs process tokens with **linear complexity** ($O(N)$), summarizing the entire history into a fixed-size hidden state (similar to an RNN). This means they don't need to look back at every single previous token; they just update their current "state" with the new token.
+
+**Example:** Imagine reading a massive book. 
+- A **Transformer** has a perfect photographic memory but has to reread the entire book from page 1 every time it reads a new word to understand the context. This gets incredibly slow ($O(N^2)$).
+- A **Mamba (SSM)** model acts like a reader taking brief, focused notes. When it reads a new chapter, it doesn't reread the whole book; it just looks at its notebook (the state) and updates it with the new plot points. This is much faster and scales linearly ($O(N)$).
+
+### The Anatomy of the Mamba State
+In Mamba, the hidden state isn't just a single vector, but a combination of two representations:
+- **Convolutional State:** A short-term, local memory. E.g., If the sequence is "The quick brown fox", the convolutional state for "fox" might remember "quick brown" to understand immediate context. It uses a 1D convolution window.
+- **Temporal State (SSM State):** The long-term memory that compresses the entire sequence history through the state space equations. E.g., The notebook keeping track of the overarching story plot from chapter 1 to chapter 50.
+
+## 3. Hybrid LLMs: The Best of Both Worlds
+So, why use both? Models like `Qwen3.5-27B` or `Jamba` are **Hybrid Architecture Models**. They interleave Attention layers with SSM layers to achieve a balance between the high recall/reasoning capabilities of Transformers and the massive context-window efficiency of SSMs.
+
+### How Layer Interleaving Works
+Imagine a 64-layer architecture block. Instead of doing 64 Attention layers (incredibly slow for 100k+ tokens), a hybrid model might follow a pattern like:
+`[SSM, SSM, SSM, Attention, SSM, SSM, SSM, Attention, ...]`
+
+- The **SSM layers** act as the highly efficient "readers" that compress long stretches of text into the hidden state in linear time.
+- The **Attention layers** periodically "sync up", pulling out specific, high-fidelity facts from the sequence history that the SSMs might have over-compressed.
+
+This means for a single token pass-through, the system must manage *both* the KV Cache needed by the scattered Attention layers and the Continuous Hidden State needed by the SSM layers.
+
+## 4. SGLang Basics: RadixAttention and Memory Pools
+SGLang is a high-performance serving framework for LLMs. Two of its primary concepts are RadixAttention and Memory Pools.
+
+### RadixAttention
+To avoid redundant computation during inference (e.g., when sharing a system prompt or multi-turn chat), SGLang caches the states of past tokens. **RadixAttention** stores these states in a **radix tree** (a compressed prefix tree). 
+- If a new request shares a prefix (like the first 1,000 words of a system prompt) with an old request, SGLang traverses the Radix Tree, finds the node corresponding to those 1,000 words, and skips computing them entirely.
+
+### Memory Pools in SGLang (Hybrid Setup)
+Because hybrid models have two fundamentally different types of memory, SGLang must pre-allocate separate GPU memory blocks to prevent fragmentation and Out-Of-Memory (OOM) crashes:
+1. **TokenToKVPool (KV Cache Pool):** Stores the explicit $K$ and $V$ tensors for the dense Attention layers. This grows proportionally with the sequence length.
+2. **MambaPool (SSM Pool):** Stores the convolutional and temporal states for Mamba/linear-attention layers. Unlike KV Cache, the SSM state size is *fixed* regardless of sequence length—a 10-token prefix and a 10,000-token prefix take up the exact same amount of memory in the SSM State pool.
+
+## 5. The Marconi Paper: FLOP-Aware Prefix Caching
+Because **Hybrid LLMs** use both Attention layers and SSM layers, caching them is notoriously tricky. Traditional caching uses pure "Least Recently Used" (LRU) policies—if a sequence hasn't been accessed recently, evict it.
+
+**The Problem:** SSM states are updated *in-place*. 
+- If you evict the KV cache of a 10,000-token Transformer prompt, you just have to recompute the KV cache.
+- If you evict the SSM state of a 10,000-token Hybrid prompt, you have to run 10,000 tokens through *every single SSM and Attention layer* from scratch to perfectly recreate that fixed-size state matrix. **Recomputing a long sequence's SSM state is astronomically expensive.**
+
+### The Solution (Marconi): FLOP-Aware Eviction
+Instead of just looking at recency (LRU), Marconi uses a **FLOP-aware eviction policy**. It calculates a **FLOP efficiency score ($\mathcal{E}$)**: the number of floating-point operations (FLOPs) you *save* by keeping a cache entry, divided by the memory bytes it physically occupies on the GPU.
+
+### The Marconi FLOP Equations Explained
+Let's go "wild" into the math. The goal is to calculate $\mathcal{E}(p) = \frac{\Delta \text{FLOPs}(p)}{\text{Memory}(p)}$ where $p$ is the prefix length.
+
+#### 1. Calculating FLOP Savings ($\Delta \text{FLOPs}$)
+When we hit a cached prefix of length $L_p$ for a total sequence of length $L$, we skip recomputing those $L_p$ tokens. But the savings differ by layer type:
+
+**A. Attention Layer FLOP Savings:**
+The computational cost of Attention is quadratic: it involves projecting the vectors (linear) and then computing the attention scores ($QA^T$, which is quadratic).
+Total FLOPs for Attention on length $L$:
+$$ \text{FLOPs}_{attn}(L) = 4 L h (h + k \cdot d) + 4 L^2 a \cdot d $$
+*(Where $h$=hidden size, $k$=KV heads, $a$=attention heads, $d$=head dim)*
+
+The *savings* from caching a prefix of length $L_p$ when processing a sequence of length $L$ is the cost of processing the full sequence minus the cost of processing just the *uncached* overlapping part ($L - L_p$):
+$$ \Delta \text{FLOPs}_{attn} = \text{FLOPs}_{attn}(L) - \text{FLOPs}_{attn}(L - L_p) $$
+Notice that because of the $L^2$ term, caching a 100-token prefix for a 10,000-token prompt saves *way more* FLOPs than caching a 100-token prefix for a 200-token prompt!
+
+**B. SSM (Mamba) Layer FLOP Savings:**
+SSMs process tokens linearly. The FLOPs are dominated by state transitions and projections:
+$$ \text{FLOPs}_{ssm}(L_p) = 2 L_p v \cdot s + 8 L_p h \cdot v $$
+*(Where $v$=intermediate size, $s$=state size)*. 
+Because it's linear, the FLOPs saved are directly proportional to the prefix length $L_p$.
+
+**C. Feed-Forward Network (MLP/MoE) FLOP Savings:**
+Hybrid models often use Mixture of Experts (MoE) or dense MLPs. Like SSMs, these are linear with respect to sequence length:
+$$ \text{FLOPs}_{mlp}(L_p) = 6 L_p h \cdot i $$
+*(Where $i$=intermediate size)*.
+
+**Total FLOPs Saved:**
+We sum these up across all layers in the specific model's architecture (e.g., $N_{attn}$ attention layers, $N_{ssm}$ Mamba layers):
+$$ \Delta \text{FLOPs}_{total} = \sum (\Delta \text{FLOPs}_{attn}) + \sum (\text{FLOPs}_{ssm}) + \sum (\text{FLOPs}_{mlp}) $$
+
+#### 2. Calculating Memory Cost ($\text{Memory}(p)$)
+The memory footprint of caching prefix $p$ includes both the KV cache and the SSM state.
+
+- **KV Cache Size:** Grows linearly with prefix length $L_p$.
+  $$ \text{Mem}_{KV} = 2 \times 2 \times L_p \times k \times d \times N_{attn} $$
+  *(Multiplying by 2 for both K and V, by 2 for FP16 bytes)*.
+- **SSM State Size:** A massive, *fixed* block of memory, regardless of $L_p$.
+  $$ \text{Mem}_{SSM} = \text{constant state size depending on Mamba config} $$
+
+**Total Memory:**
+$$ \text{Memory}(p) = \text{Mem}_{KV}(L_p) + \text{Mem}_{SSM} $$
+
+#### 3. The Final Efficiency Score
+$$ \mathcal{E}(p) = \frac{\Delta \text{FLOPs}_{total}(p)}{\text{Memory}(p)} $$
+
+**The profound realization of Marconi:** Because $\text{Mem}_{SSM}$ is a massive fixed constant, short prefixes have terrible efficiency (very little FLOP savings relative to the huge fixed memory cost of storing an SSM state). But as $L_p$ grows large, the $L^2$ FLOP savings from the Attention layers absolutely explodes, dwarfing the memory cost. Therefore, **Marconi ruthlessly evicts short prefixes and aggressively protects long prefixes.**
+
+## 6. SGLang Integration: The PR and RFC_MARCONI
+The `abdelfattah-lab` pull request implements Marconi's logic directly into SGLang. 
+
+### Core Changes in the Code
+1. **Marconi Efficiency Math (`marconi_utils.py`):**
+   New mathematical utilities compute the FLOPs saved by full-attention layers, linear-attention (Mamba), and MoE (Mixture of Experts) layers. It divides this by the exact memory footprint of the SSM state + KV state to get the `flop_efficiency` score.
+
+2. **Dual-State LRU and Tombstoning (`mamba_radix_cache.py` / `RFC_MARCONI.md`):**
+   SGLang enforces an invariant: **KV cache cannot be evicted without evicting the SSM state, but the SSM state can be evicted independently**.
+   Under the new policy, `evict_mamba_marconi` evaluates all unlocked eviction candidates using the equation:
+   `Utility = (α * normalized_efficiency) + normalized_recency`
+   If an internal node in the Radix Tree is chosen for eviction, its SSM state is freed (to save memory), but its KV cache is kept—a process called **Tombstoning**.
+
+3. **Node Scoring (`TreeNode`):**
+   Nodes in the Radix Tree are augmented with `num_cached_tokens` and `_flop_efficiency`. This efficiency is lazily invalidated upon cache access and recalculated when memory pressure triggers eviction.
+
+By integrating these features via the `--eviction-policy marconi` argument, SGLang can serve hybrid models (like `Qwen3.5-27B`) with vastly improved Time-To-First-Token (TTFT) and cache hit rates compared to standard LRU.
 
 ---
 
-## Table of Contents
+## 7. Running the Implementation
 
-1. [Paper Analysis](#1-paper-analysis)
-2. [Model Selection](#2-model-selection)
-3. [Phase 0: SGLang Smoke Test](#3-phase-0-sglang-smoke-test)
-4. [Phase 1: Live Inference Baseline](#4-phase-1-live-inference-baseline)
-5. [Phase 2: Implement & Compare Marconi](#5-phase-2-implement--compare-marconi)
-6. [Key References](#6-key-references)
-
----
-
-## 1. Paper Analysis
-
-### 1.1 What Experiments Does the Paper Actually Run?
-
-The paper uses **two distinct evaluation modes**. Understanding this is critical for reproducing results correctly.
-
-| Evaluation | Mode | Model | Hardware | Figures |
-|---|---|---|---|---|
-| Token hit rate, FLOP savings | **Trace-driven simulation** (CPU-only) | NVIDIA Mamba2-Hybrid 7B config | Any CPU machine | Figs 7, 8, 10–13 |
-| TTFT measurements | **Live GPU inference** | Jamba-1.5-Mini (12B/52B) | 4× A100-40GB (vLLM) | Fig 9 |
-
-> [!IMPORTANT]
-> The **main results** (token hit rate improvements of 4.5–34.4× over vLLM+) come entirely from the trace-driven simulator. The simulator uses pre-tokenized inputs (tokenized with `meta-llama/Llama-2-7b-hf`) and scores nodes using FLOP/memory formulas—**no actual model weights are loaded**.
-
-### 1.2 The Simulation Model Config
-
-The trace-driven simulator ([`policy_exploration.py`](../marconi/policy_exploration.py) lines 196–202) uses:
-
-```python
-# NVIDIA's Attention-Mamba2 Hybrid 7B model (https://arxiv.org/pdf/2406.07887)
-num_ssm_layers = 24
-num_attn_layers = 4
-num_mlp_layers = 28
-d = 4096
-n = 128
-```
-
-This config is from the [NVIDIA Mamba-2 paper](https://arxiv.org/abs/2406.07887). The model available on HuggingFace is [`nvidia/mamba2-hybrid-8b-3t-128k`](https://huggingface.co/nvidia/mamba2-hybrid-8b-3t-128k), but it uses custom Megatron-LM code and is not directly loadable in SGLang.
-
-### 1.3 Baselines in the Paper
-
-| System | Admission | Eviction | Description |
-|---|---|---|---|
-| **vLLM+** | Fine-grained (every 32 tokens) | LRU | Extended vLLM with hybrid support |
-| **SGLang+** | Judicious (Marconi's admission) | LRU | SGLang with Marconi's admission but LRU eviction |
-| **Marconi** | Judicious | FLOP-aware (α-weighted) | Full Marconi system |
-
-### 1.4 Key Metrics
-
-- **Token hit rate** (%): ratio of tokens that skipped prefill / total input tokens
-- **TTFT** (ms): Time to first token at P5, P50, P95 percentiles
-- **FLOP saved**: total compute savings (proxy for latency)
-
-### 1.5 Marconi's Core Mechanisms
-
-**Judicious Admission**: Only cache SSM states when reuse is likely:
-- Purely-input prefixes (system prompts): speculative insertion at branch points
-- Input-and-output prefixes (conversations): cache only the last decoded token's SSM state
-
-**FLOP-Aware Eviction**: Score nodes by `S(n) = recency(n) + α · flop_efficiency(n)`, where FLOP efficiency = compute_saved / memory_footprint. α=0 degenerates to LRU.
-
-**Online α Tuning**: Bootstrap window → replay past requests with α ∈ {0, 0.1, …, 2.0} → pick best α.
-
-See [`radix_cache_hybrid.py`](../marconi/radix_cache_hybrid.py) and [`config_tuner.py`](../marconi/config_tuner.py) for the simulation implementations.
-
-### 1.6 FLOP Formulas (from [`utils.py`](../marconi/utils.py))
-
-| Layer | FLOPs (forward only) |
-|---|---|
-| **Attention** | `8·L·D² + 4·L²·D` |
-| **MLP** | `16·L·D²` |
-| **Mamba1/2** | `12·L·D² + 16·L·D·N + 10·L·D` |
-
-Memory per node: `num_ssm_layers × mamba_state_size(d,n) + num_attn_layers × kv_size(L,d)`
-
----
-
-## 2. Model Selection
-
-### 2.1 Recommended Model: Nemotron-H 8B
-
-**Model**: [`nvidia/Nemotron-H-8B-Base-8K`](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K)
-
-| Config | Paper (Mamba2-Hybrid 7B) | Nemotron-H 8B | Match? |
-|---|---|---|---|
-| Attention layers | 4 | 4 | ✅ |
-| SSM (Mamba-2) layers | 24 | 24 | ✅ |
-| MLP layers | 28 | 24 | ⚠️ close |
-| d_model | 4096 | 4096 | ✅ |
-| SSM state dim (n) | 128 | 128 | ✅ |
-| Total layers | 56 | 52 | ⚠️ |
-
-### 2.2 Rationale
-
-1. **Architecture match**: 4 attn + 24 SSM layers with d=4096, n=128 are identical. Only MLP count differs (24 vs 28).
-2. **SGLang native support**: `NemotronHForCausalLM` is supported in SGLang with `MambaRadixCache` via [PR #11214](https://github.com/sgl-project/sglang/pull/11214).
-3. **Size**: ~8B parameters, fits on 1–2 A100-40GB GPUs.
-4. **MLP difference impact**: MLP layers only affect the `flop_efficiency` denominator/numerator in eviction scoring. The relative ordering of Marconi vs LRU eviction decisions is largely preserved since the attn/SSM ratio (the main driver of Marconi's advantage) is identical.
-
-### 2.3 Alternatives Considered
-
-| Model | Why not? |
-|---|---|
-| `nvidia/mamba2-hybrid-8b-3t-128k` | Uses Megatron-LM custom code, not HF-native, likely incompatible with SGLang |
-| `ai21labs/Jamba-1.5-Mini` | SGLang Jamba support still maturing (open feature request); MoE architecture adds complexity |
-| `Qwen/Qwen3-Next-80B-A3B-Instruct` | Too large (80B), requires 4+ GPUs, very different architecture from paper's 7B hybrid |
-
-### 2.4 Simulation Config Adjustment
-
-When comparing live results with the trace-driven simulator, update the simulator's config to match Nemotron-H:
-
-```python
-# In policy_exploration.py, change:
-num_mlp_layers = 24  # was 28, now matches Nemotron-H 8B
-```
-
-This ensures apples-to-apples comparison between simulated and live results.
-
----
-
-## 3. Phase 0: SGLang Smoke Test
-
-**Goal**: Verify the sglang Docker image correctly loads and serves a hybrid model.
-
-### 3.1 Start the Server
+### 7.1 Running Marconi Unit Tests
+You can verify the mathematical correctness of the Marconi FLOP efficiency implementation by running the SGLang test suite. From the root of the project, using the `uv` environment with the `PYTHONPATH` correctly mapped to the `sglang` submodule:
 
 ```bash
-# Option A: via docker-compose (recommended)
-MODEL_NAME=nvidia/Nemotron-H-8B-Base-8K TENSOR_PARALLEL=1 docker compose up sglang-server
-
-# Option B: in container directly
-python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-8K \
-    --host 0.0.0.0 --port 30000 \
-    --tp 1
+# Run the 28 Marconi cache utility tests successfully
+PYTHONPATH=$(pwd)/sglang/python uv run --project . python3 sglang/test/registered/radix_cache/test_marconi_utils.py
 ```
 
-> [!TIP]
-> Use `--tp 1` for single-GPU. If the model doesn't fit, try `--tp 2`. The Nemotron-H 8B in FP16 needs ~16GB VRAM for weights alone.
-
-### 3.2 Verify Health
+### 7.2 Launching the Server with Marconi Caching
+To start the SGLang server and actually utilize the Marconi caching policy for benchmarking, you need to use the newly implemented arguments: `--eviction-policy marconi` and `--marconi-eff-weight`.
 
 ```bash
-# Health check
-curl http://localhost:30000/health
-
-# Model info
-curl http://localhost:30000/v1/models
+# Launch SGLang with a Hybrid Model (e.g. Qwen3.5-27B) using Marconi Eviction from source
+PYTHONPATH=$(pwd)/sglang/python uv run --project . python3 -m sglang.launch_server \
+    --model-path Qwen/Qwen3.5-27B \
+    --radix-eviction-policy marconi \
+    --marconi-eff-weight 0.7 \
+    --port 30000
 ```
-
-### 3.3 Test Inference
-
-```bash
-# Simple completion
-curl -s http://localhost:30000/v1/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "nvidia/Nemotron-H-8B-Base-8K",
-    "prompt": "The capital of France is",
-    "max_tokens": 20,
-    "temperature": 0
-  }' | python3 -m json.tool
-
-# Chat completion
-curl -s http://localhost:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "nvidia/Nemotron-H-8B-Base-8K",
-    "messages": [
-      {"role": "user", "content": "What is 2+2?"}
-    ],
-    "max_tokens": 50,
-    "temperature": 0
-  }' | python3 -m json.tool
-```
-
-### 3.4 Verify Hybrid Architecture Detection
-
-Check the server logs for:
-- Mamba/SSM layer detection
-- `MambaRadixCache` initialization (if radix cache is enabled)
-- No errors about unsupported model type
-
-```bash
-# Check logs for hybrid-specific messages
-docker compose logs sglang-server 2>&1 | grep -i "mamba\|hybrid\|radix\|ssm"
-```
-
-### 3.5 Smoke Test Checklist
-
-- [ ] Server starts without errors
-- [ ] `/health` returns 200
-- [ ] `/v1/models` lists the model
-- [ ] Completions return coherent text
-- [ ] Server logs show hybrid architecture recognized
-- [ ] `MambaRadixCache` is initialized (when radix cache enabled)
+- **`--radix-eviction-policy marconi`**: Shifts the Radix Cache from pure LRU to the tombstoning FLOP-aware math discussed in Section 5.
+- **`--marconi-eff-weight 0.7`**: Tunes the $\alpha$ parameter (how much priority is given to FLOP savings vs Recency). The paper recommends balancing this based on total KV cache size.
 
 ---
 
-## 4. Phase 1: Live Inference Baseline
+## 8. Adapting Nemotron Models to Marconi
+While the current Marconi integration in SGLang was built targeting `Qwen3.5-27B` (and similar Qwen hybrid models), adapting it to work with **Nemotron** (e.g., Nemotron-H) is entirely feasible but requires bridging configuration mismatches. 
 
-**Goal**: Establish baseline performance with SGLang's default caching (LRU) using Marconi's trace workloads.
+The Marconi mathematics relies on specific config attributes to calculate FLOP savings in `sglang/srt/mem_cache/marconi_utils.py`. The `NemotronHConfig` has the correct architectural components (Attention, Mamba, MLP, MoE), but names them differently or infers them through a pattern string.
 
-### 4.1 Trace Format Adaptation
+### Required Adaptations
+To adapt Marconi to work with Nemotron, the `compute_flops_saved` function in `marconi_utils.py` needs a translation layer (or `NemotronHConfig` needs aliases) for the following:
 
-Marconi's pre-tokenized traces are JSONL with fields:
-```json
-{
-  "session_id": "...",
-  "turn_id": 0,
-  "ts": 1234567890.0,
-  "num_input_tokens": 512,
-  "num_output_tokens": 128,
-  "input_tokens": [1, 2, 3, ...],
-  "output_tokens": [4, 5, 6, ...]
-}
-```
+1. **Layer Types Resolution:**
+   - **Marconi Expects:** `config.layers_block_type` (a list of strings like `"attention"`, `"linear_attention"`).
+   - **Nemotron Reality:** Uses a `hybrid_override_pattern` string (e.g., `"M-M-M-M*-M..."`) where `M`=Mamba, `*`=Attention, `-`=MLP, `E`=MoE.
 
-> [!WARNING]
-> The traces are tokenized with `meta-llama/Llama-2-7b-hf` tokenizer, but we're serving Nemotron-H which uses a different tokenizer. For hit-rate comparison, we need to either:
-> 1. **Re-tokenize** the traces with Nemotron-H's tokenizer (cleanest approach), or
-> 2. **Use text-level replay** — decode traces back to text, then send as text prompts to SGLang (which re-tokenizes)
->
-> Option 2 is simpler and more realistic but may lose some token-level alignment with simulation results. For initial experiments, Option 2 is sufficient.
+2. **Mamba (Linear Attention) Parameters:**
+   - **Marconi Expects:** `config.linear_num_value_heads`, `config.linear_value_head_dim`, `config.linear_key_head_dim`.
+   - **Nemotron Reality:** Uses `mamba_num_heads`, `mamba_head_dim`, and `ssm_state_size`.
 
-### 4.2 Trace Replayer Script
+3. **MoE Parameters (If Applicable):**
+   - **Marconi Expects:** `config.moe_intermediate_size` and `config.shared_expert_intermediate_size`.
+   - **Nemotron Reality:** Uses identical names, but `is_moe` check in Marconi checks for `num_experts > 1`, while Nemotron uses `n_routed_experts`.
 
-Build a custom trace replayer that:
-1. Reads Marconi JSONL traces
-2. Decodes token IDs back to text using `meta-llama/Llama-2-7b-hf` tokenizer
-3. Sends requests to SGLang via HTTP API
-4. Respects inter-request timing from traces
-5. Records per-request TTFT and cache hit metrics from SGLang
+**Implementation Path:**
+To enable Nemotron support, modify `compute_flops_saved` to detect `model_type == "nemotron_h"` and dynamically map the Nemotron attributes into the expected variables, and parse the `hybrid_override_pattern` string into the sequential `layers_block_type` list. Once mapped, the exact same FLOP efficiency calculations and tombstoning logic will work perfectly with Nemotron.
 
-### 4.3 Baseline Experiments
-
-```bash
-# Run 1: No radix cache (vanilla inference)
-python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-8K \
-    --tp 1 --disable-radix-cache
-
-# Run 2: With radix cache (LRU eviction — this is "SGLang+" baseline)
-python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-8K \
-    --tp 1
-
-# Run 3: Quick bench_serving sanity check (generated workload)
-python3 -m sglang.bench_serving \
-    --backend sglang --base-url http://localhost:30000 \
-    --dataset-name generated-shared-prefix \
-    --num-prompts 100
-```
-
-### 4.4 Metrics to Collect
-
-| Metric | Source | Notes |
-|---|---|---|
-| Token hit rate | SGLang metrics endpoint or logs | May need to enable verbose cache logging |
-| TTFT (P50, P95, P99) | Trace replayer timestamps | `time_to_first_token = first_token_time - request_sent_time` |
-| Input throughput (tok/s) | bench_serving output | Baseline comparison |
-| Output throughput (tok/s) | bench_serving output | Baseline comparison |
-
----
-
-## 5. Phase 2: Implement & Compare Marconi
-
-**Goal**: Add FLOP-aware eviction to SGLang and compare against baselines.
-
-### 5.1 Existing Work: SGLang PR #17898
-
-There is a **WIP implementation** of Marconi in SGLang: [PR #17898](https://github.com/sgl-project/sglang/pull/17898) by [@qimcis](https://github.com/qimcis) (opened Jan 28, 2026).
-
-#### What PR #17898 adds:
-
-| Component | Files | Description |
-|---|---|---|
-| **Server args** | `server_args.py` | `--enable-marconi`, `--marconi-eff-weight`, `--marconi-bootstrap-window-size`, `--marconi-bootstrap-multiplier`, `--marconi-tuning-interval` |
-| **Admission control** | `marconi_admission_cache.py` | Judicious admission (branch point + last token caching) |
-| **FLOP-aware eviction** | Modified `mamba_radix_cache.py` | Utility scoring = recency + α·efficiency, candidate collection |
-| **Config tuning** | `marconi_tuning_cache.py` | Online α tuning with process pool |
-| **Utilities** | `marconi_utils.py` | FLOP/memory calculation functions (ported from paper's `utils.py`) |
-| **Config** | `marconi_config.py` | Centralized Marconi configuration |
-| **Request tracking** | `data.py` (Req class) | New fields: `kv_cache_protected_len`, `kv_cache_inserted_start/end`, `marconi_cache_len` |
-
-#### Status and gaps:
-
-- The PR is **WIP** (30 commits, "fix" commit messages suggest active iteration)
-- No tests or benchmarks included yet
-- Not merged; may have integration issues with latest SGLang main
-- Based on SGLang's `MambaRadixCache` — correct target for our work
-
-### 5.2 Strategy: Build on PR #17898
-
-1. **Fork or cherry-pick** the PR's changes onto the SGLang version in our Docker image (v0.5.6.post2)
-2. **Test** with Nemotron-H 8B and verify the server starts with `--enable-marconi`
-3. **Validate** eviction behavior with simple workloads before full trace replay
-4. **Benchmark** with Marconi traces and compare against Phase 1 baselines
-
-### 5.3 Running with Marconi Enabled
-
-```bash
-# With Marconi eviction (via docker-compose)
-MODEL_NAME=nvidia/Nemotron-H-8B-Base-8K \
-TENSOR_PARALLEL=1 \
-SGLANG_EXTRA_ARGS="--enable-marconi --marconi-eff-weight 0.5" \
-docker compose up sglang-server
-
-# Or directly
-python3 -m sglang.launch_server \
-    --model nvidia/Nemotron-H-8B-Base-8K \
-    --tp 1 \
-    --enable-marconi \
-    --marconi-eff-weight 0.5
-```
-
-### 5.4 Expected Results Comparison
-
-Based on the trace-driven simulation and the paper:
-
-| Metric | vLLM+ → Marconi | SGLang+ → Marconi |
-|---|---|---|
-| Token hit rate | 4.5–34.4× improvement | 19–220% improvement |
-| P95 TTFT | Up to 71.1% reduction | Up to 24.7% reduction |
-| Best on | SWEBench (long, diverse sequences) | SWEBench |
-
-> [!NOTE]
-> Live inference results will likely show **smaller gains** than the simulation because:
-> 1. We're using a different model (Nemotron-H 8B vs the paper's abstract 7B config)
-> 2. The simulation assumes perfect compute-bound prefill (FLOP ≈ time), but real GPUs have memory bandwidth effects
-> 3. Without judicious admission, the gap narrows
->
-> The directional improvement (Marconi > LRU) should still hold clearly.
-
----
-
-## 6. Key References
-
-| Resource | Link |
-|---|---|
-| Marconi paper | [arXiv:2411.19379](https://arxiv.org/abs/2411.19379) |
-| Marconi repo (simulation) | [ruipeterpan/marconi](https://github.com/ruipeterpan/marconi) |
-| Marconi in SGLang (WIP PR) | [PR #17898](https://github.com/sgl-project/sglang/pull/17898) |
-| SGLang MambaRadixCache | [PR #11214](https://github.com/sgl-project/sglang/pull/11214) |
-| Nemotron-H 8B (HuggingFace) | [nvidia/Nemotron-H-8B-Base-8K](https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K) |
-| NVIDIA Mamba-2 Hybrid paper | [arXiv:2406.07887](https://arxiv.org/abs/2406.07887) |
-| Original Mamba-2 Hybrid model | [nvidia/mamba2-hybrid-8b-3t-128k](https://huggingface.co/nvidia/mamba2-hybrid-8b-3t-128k) |
-| Artifact evaluation | [marconi/artifact_evaluation.md](../marconi/artifact_evaluation.md) |
-| SGLang overview | [01-sglang-overview.md](01-sglang-overview.md) |
-| Mamba implementation | [02-mamba-sglang-implementation.md](02-mamba-sglang-implementation.md) |
-| Setup notebook | [setup-vm.ipynb](../setup-vm.ipynb) |

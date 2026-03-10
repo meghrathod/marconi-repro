@@ -103,6 +103,19 @@ The inter-turn delay for SWE-Bench uses `np.random.poisson(avg_response_time)` i
 
 ## Part 2: The Trace Replayer ([trace_replayer.py](../src/trace_replayer.py))
 
+### How to Start the Sever
+
+Before running the replayer, you must start the SGLang server from source with the desired cache eviction policy. All experiments evaluate the server from source.
+
+Example (starting with Marconi FLOP-aware eviction):
+```bash
+PYTHONPATH=$(pwd)/sglang/python uv run --project . python3 -m sglang.launch_server \
+    --model-path nvidia/Nemotron-H-8B-Base-8K \
+    --radix-eviction-policy marconi \
+    --marconi-eff-weight 0.7 \
+    --port 30000
+```
+
 ### What It Does
 
 Reads the JSONL trace files and **fires them at a live SGLang server** via the `/v1/completions` API, respecting request timing, then collects and summarizes performance metrics.
@@ -127,13 +140,6 @@ flowchart TD
     L --> M[Write results JSONL + Print summary]
 ```
 
-### Two Streaming Modes
-
-| Mode | TTFT Measurement | Cache Metrics | Use When |
-|------|-----------------|---------------|----------|
-| **Streaming** (default) | ✅ Precise (time to first SSE chunk) | ❌ Not available | Measuring latency |
-| **Non-streaming** (`--no-stream`) | ❌ TTFT = total latency | ✅ `cached_tokens` per request | Measuring cache effectiveness |
-
 ### How Requests Are Sent
 
 1. **Timing**: `compute_sleep_durations` calculates the delay between consecutive requests based on `ts` deltas from the trace. `speed_factor=0` means fire ASAP (stress test), `1.0` means real-time replay.
@@ -145,8 +151,8 @@ flowchart TD
 ### Metrics Collected
 
 Per-request (`ReplayResult`):
-- **TTFT** (streaming mode) or total latency
-- **`cached_tokens`** (non-streaming mode) — how many prompt tokens were served from cache
+- **TTFT** or total latency
+- **`cached_tokens`** — how many prompt tokens were served from cache
 - **`cache_hit_pct`** = `cached_tokens / prompt_tokens × 100`
 
 Server-level (via Prometheus `/metrics` scraping):
