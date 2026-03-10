@@ -30,3 +30,4 @@ pytest
 tqdm>=4.60.0
 python-dotenv
 uv
+prometheus_client

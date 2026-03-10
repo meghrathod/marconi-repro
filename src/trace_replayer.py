@@ -47,12 +47,14 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from tqdm import tqdm
+from prometheus_client import CollectorRegistry, Gauge, generate_latest
 
 TOKENIZER_MODEL = os.environ.get("TOKENIZER_MODEL", "meta-llama/Llama-2-7b-hf")
 
@@ -452,6 +454,38 @@ async def fetch_server_metrics(
 # ---------------------------------------------------------------------------
 
 
+async def push_metrics_loop(
+    session: aiohttp.ClientSession,
+    server_url: str,
+    pushgateway_url: str,
+    trace_name: str,
+    registry: CollectorRegistry,
+):
+    """Continuously scrape SGLang metrics, combine with custom registry, and push to Pushgateway."""
+    trace_name_enc = urllib.parse.quote_plus(trace_name)
+    pg_url = f"{pushgateway_url.rstrip('/')}/metrics/job/trace_replay/trace_file/{trace_name_enc}"
+    
+    while True:
+        try:
+            sglang_metrics_text = ""
+            metrics_url = f"{server_url.rstrip('/')}/metrics"
+            async with session.get(metrics_url) as resp:
+                if resp.status == 200:
+                    sglang_metrics_text = await resp.text()
+            
+            custom_metrics_text = generate_latest(registry).decode("utf-8")
+            combined_text = custom_metrics_text + "\n" + sglang_metrics_text
+            
+            async with session.post(pg_url, data=combined_text) as push_resp:
+                pass
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug("Failed to push metrics: %s", e)
+        
+        await asyncio.sleep(2.0)
+
+
 async def replay_trace(
     requests: list[TraceRequest],
     server_url: str,
@@ -461,6 +495,8 @@ async def replay_trace(
     text_mode: bool,
     dry_run: bool,
     no_stream: bool = False,
+    trace_name: str = "unknown",
+    pushgateway_url: str = "http://localhost:9091",
 ) -> tuple[list[ReplayResult], dict[str, Any]]:
     """Replay trace requests sequentially against SGLang.
 
@@ -518,10 +554,28 @@ async def replay_trace(
     connector = aiohttp.TCPConnector(limit=64)
     timeout = aiohttp.ClientTimeout(total=300)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        # Check if pushgateway is valid
+        pushgateway_valid = bool(pushgateway_url)
+
+        # Setup Prometheus Gauges
+        registry = CollectorRegistry()
+        ttft_gauge = Gauge("marconi_ttft_ms", "Time to first token (P50)", registry=registry)
+        latency_gauge = Gauge("marconi_total_latency_ms", "Total latency (P50)", registry=registry)
+        throughput_gauge = Gauge("marconi_output_throughput_tok_s", "Output throughput (tok/s)", registry=registry)
+        token_hit_rate_gauge = Gauge("marconi_token_hit_rate_pct", "Overall token cache hit rate", registry=registry)
+        cached_tokens_gauge = Gauge("marconi_total_cached_tokens", "Total cached tokens", registry=registry)
+        prompt_tokens_gauge = Gauge("marconi_total_prompt_tokens", "Total prompt tokens", registry=registry)
+
+        push_task = None
+        if pushgateway_valid:
+            push_task = asyncio.create_task(
+                push_metrics_loop(session, server_url, pushgateway_url, trace_name, registry)
+            )
+
         # Scrape server metrics before replay
         metrics_before = await fetch_server_metrics(session, server_url)
 
-        logger.info("Replaying %d requests (%s mode)", len(requests), mode_label)
+        logger.info("Replaying %d requests (%s mode) tracing: %s", len(requests), mode_label, trace_name)
 
         # Track TTFT metrics for per-request TTFT via Prometheus delta
         prev_ttft = await fetch_server_metrics(session, server_url)
@@ -558,6 +612,31 @@ async def replay_trace(
             prev_ttft = cur_ttft
 
             results.append(result)
+            
+            # --- Update Running Metrics ---
+            if pushgateway_valid:
+                successful = [r for r in results if r.error is None]
+                if successful:
+                    ttfts = [r.ttft_ms for r in successful if r.ttft_ms > 0]
+                    if ttfts:
+                        ttfts.sort()
+                        ttft_gauge.set(ttfts[int(len(ttfts)*0.50)])
+                    
+                    lats = sorted([r.total_latency_ms for r in successful])
+                    latency_gauge.set(lats[int(len(lats)*0.50)])
+                    
+                    total_time = sum(r.total_latency_ms for r in successful) / 1000
+                    total_gen = sum(r.generated_tokens for r in successful)
+                    if total_time > 0:
+                        throughput_gauge.set(total_gen / total_time)
+                    
+                    t_cached = sum(r.cached_tokens for r in successful)
+                    t_prompt = sum(r.prompt_tokens for r in successful)
+                    cached_tokens_gauge.set(t_cached)
+                    prompt_tokens_gauge.set(t_prompt)
+                    if t_prompt > 0:
+                        token_hit_rate_gauge.set((t_cached / t_prompt) * 100)
+            # ------------------------------
 
             if result.error:
                 logger.warning(
@@ -582,6 +661,26 @@ async def replay_trace(
                 metrics_after.cache_query_count - metrics_before.cache_query_count
             ),
         }
+        
+        # Cleanup the background task and finalize push
+        if push_task:
+            push_task.cancel()
+            try:
+                await push_task
+            except asyncio.CancelledError:
+                pass
+            
+            try:
+                custom_metrics_text = generate_latest(registry).decode("utf-8")
+                async with session.get(f"{server_url.rstrip('/')}/metrics") as resp:
+                    if resp.status == 200:
+                        sglang_metrics_text = await resp.text()
+                        trace_name_enc = urllib.parse.quote_plus(trace_name)
+                        pg_url = f"{pushgateway_url.rstrip('/')}/metrics/job/trace_replay/trace_file/{trace_name_enc}"
+                        combined_text = custom_metrics_text + "\n" + sglang_metrics_text
+                        await session.post(pg_url, data=combined_text)
+            except Exception:
+                pass
 
     return results, server_metrics_delta
 
@@ -721,6 +820,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="SGLang server base URL (default: http://localhost:30000).",
     )
     parser.add_argument(
+        "--pushgateway-url",
+        default="http://localhost:9091",
+        help="Pushgateway URL for exporting metrics (default: http://localhost:9091). Empty to disable.",
+    )
+    parser.add_argument(
         "--model",
         default="nvidia/Nemotron-H-8B-Base-8K",
         help="Model name for the completions API.",
@@ -810,6 +914,8 @@ def _replay_single_trace(
             text_mode=args.text_mode,
             dry_run=args.dry_run,
             no_stream=not args.stream,
+            trace_name=trace_path.name,
+            pushgateway_url=args.pushgateway_url,
         )
     )
 
