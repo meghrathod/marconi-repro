@@ -5,11 +5,7 @@ Reads pre-tokenized traces (produced by marconi/utils/generate_trace.py),
 and sends them to an SGLang /v1/completions endpoint to measure TTFT,
 throughput, and cache hit metrics.
 
-Two streaming modes:
-  - streaming (default): measures precise TTFT via SSE stream, but does
-    not capture per-request cache token counts.
-  - non-streaming (--no-stream): captures cached_tokens from sglang's
-    usage.prompt_tokens_details, but TTFT = total latency.
+All metrics (latency, cache hit counts) are collected via the non-streaming completions API.
 
 Two prompt modes:
   - token-ids mode (default): sends input_tokens directly as token ID array.
@@ -20,16 +16,11 @@ Directory mode:
     results to --output-dir.
 
 Usage:
-  # Single trace (streaming, for TTFT)
+  # Single trace
   python src/trace_replayer.py \
       --trace traces/lmsys_sps=1_nums=100.jsonl \
       --server-url http://localhost:30000 \
       --model nvidia/Nemotron-H-8B-Base-8K
-
-  # Single trace (non-streaming, for cache metrics)
-  python src/trace_replayer.py \
-      --trace traces/lmsys_sps=1_nums=100.jsonl \
-      --no-stream --server-url http://localhost:30000
 
   # Directory mode
   python src/trace_replayer.py \
@@ -91,7 +82,7 @@ class ReplayResult:
     ttft_ms: float = 0.0
     total_latency_ms: float = 0.0
     generated_tokens: int = 0
-    # Cache metrics (non-streaming mode only)
+    # Cache metrics
     cached_tokens: int = 0
     prompt_tokens: int = 0  # from API usage response
     completion_tokens: int = 0
@@ -209,101 +200,21 @@ def compute_sleep_durations(
 
 
 # ---------------------------------------------------------------------------
-# HTTP request sender (streaming)
+# HTTP request sender
 # ---------------------------------------------------------------------------
 
 
-async def send_completion_request_streaming(
+async def send_completion_request(
     session: aiohttp.ClientSession,
     server_url: str,
     model: str,
     prompt: str | list[int],
     max_tokens: int,
 ) -> ReplayResult:
-    """Send a streaming /v1/completions request and measure TTFT.
-
-    Best for measuring time-to-first-token.  Does NOT capture
-    per-request ``cached_tokens`` because the sglang streaming
-    response does not include ``usage.prompt_tokens_details``.
-    """
-    url = f"{server_url.rstrip('/')}/v1/completions"
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "stream": True,
-    }
-
-    prompt_len = len(prompt)  # chars or token count
-    result = ReplayResult(
-        session_id=0,
-        turn_id=0,
-        ts=0.0,
-        num_input_tokens=0,
-        num_output_tokens=0,
-        prompt_len=prompt_len,
-    )
-
-    t_start = time.perf_counter()
-    first_token_time: float | None = None
-    generated_tokens = 0
-
-    try:
-        async with session.post(url, json=payload) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                result.error = f"HTTP {resp.status}: {body[:500]}"
-                result.total_latency_ms = (time.perf_counter() - t_start) * 1000
-                return result
-
-            # Parse SSE stream
-            async for raw_line in resp.content:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[len("data: "):]
-                if data_str == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    # Extract final usage if present (some sglang versions include it)
-                    usage = chunk.get("usage")
-                    if usage and "completion_tokens" in usage:
-                        generated_tokens = usage["completion_tokens"]
-                    choices = chunk.get("choices", [])
-                    if choices and choices[0].get("text"):
-                        if first_token_time is None:
-                            first_token_time = time.perf_counter()
-                        if not usage:
-                            generated_tokens += 1
-                except json.JSONDecodeError:
-                    continue
-
-    except Exception as exc:
-        result.error = str(exc)
-        result.total_latency_ms = (time.perf_counter() - t_start) * 1000
-        return result
-
-    t_end = time.perf_counter()
-    result.total_latency_ms = (t_end - t_start) * 1000
-    if first_token_time is not None:
-        result.ttft_ms = (first_token_time - t_start) * 1000
-    result.generated_tokens = generated_tokens
-    return result
-
-
-async def send_completion_request_non_streaming(
-    session: aiohttp.ClientSession,
-    server_url: str,
-    model: str,
-    prompt: str | list[int],
-    max_tokens: int,
-) -> ReplayResult:
-    """Send a non-streaming /v1/completions request.
+    """Send a /v1/completions request.
 
     Captures ``cached_tokens`` from the ``usage.prompt_tokens_details``
-    field in the response.  TTFT is measured as total latency since the
+    field in the response. TTFT is measured as total latency since the
     entire response arrives at once.
     """
     url = f"{server_url.rstrip('/')}/v1/completions"
@@ -494,7 +405,6 @@ async def replay_trace(
     speed_factor: float,
     text_mode: bool,
     dry_run: bool,
-    no_stream: bool = False,
     trace_name: str = "unknown",
     pushgateway_url: str = "http://localhost:9091",
 ) -> tuple[list[ReplayResult], dict[str, Any]]:
@@ -510,13 +420,6 @@ async def replay_trace(
     sleep_durations = compute_sleep_durations(requests, speed_factor)
     results: list[ReplayResult] = []
     server_metrics_delta: dict[str, Any] = {}
-
-    send_fn = (
-        send_completion_request_non_streaming
-        if no_stream
-        else send_completion_request_streaming
-    )
-    mode_label = "non-streaming" if no_stream else "streaming"
 
     # Lazy-load tokenizer only if text mode is needed
     tokenizer = None
@@ -575,7 +478,7 @@ async def replay_trace(
         # Scrape server metrics before replay
         metrics_before = await fetch_server_metrics(session, server_url)
 
-        logger.info("Replaying %d requests (%s mode) tracing: %s", len(requests), mode_label, trace_name)
+        logger.info("Replaying %d requests for trace: %s", len(requests), trace_name)
 
         # Track TTFT metrics for per-request TTFT via Prometheus delta
         prev_ttft = await fetch_server_metrics(session, server_url)
@@ -588,7 +491,7 @@ async def replay_trace(
             prompt = build_prompt(req, text_mode, tokenizer)
             max_tok = max_output_tokens
 
-            result = await send_fn(
+            result = await send_completion_request(
                 session=session,
                 server_url=server_url,
                 model=model,
@@ -746,7 +649,7 @@ def print_summary(
         if total_time > 0:
             print(f"\nOutput throughput: {total_gen/total_time:.1f} tok/s (sequential)")
 
-        # Cache hit statistics (from per-request non-streaming data)
+        # Cache hit statistics (from per-request API usage data)
         total_cached = sum(r.cached_tokens for r in successful)
         total_prompt = sum(r.prompt_tokens for r in successful)
         if total_prompt > 0:
@@ -766,7 +669,7 @@ def print_summary(
                 print(f"    P95:  {pcts_sorted[min(np-1, int(np*0.95))]:.1f}%")
                 print(f"    Mean: {sum(pcts)/len(pcts):.1f}%")
         elif total_cached == 0 and total_prompt == 0:
-            print("\nCache statistics: N/A (use --no-stream to capture)")
+            print("\nCache statistics: N/A")
 
     # Server-level metrics delta
     if server_metrics_delta:
@@ -810,6 +713,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     trace_group.add_argument(
         "--trace-dir",
+        default="traces/",
         help="Path to a directory of JSONL trace files. "
         "All .jsonl files will be replayed.",
     )
@@ -837,18 +741,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default=None,
+        default="results/",
         help="Output directory for per-trace results (directory mode). "
         "Each trace produces <output-dir>/<trace_stem>.jsonl.",
     )
-    parser.add_argument(
-        "--stream",
-        action="store_true",
-        default=False,
-        help="Use streaming completions API for client-side TTFT measurement. "
-        "Default is non-streaming (reliable token counts + server TTFT "
-        "from Prometheus).",
-    )
+
     parser.add_argument(
         "--text-mode",
         action="store_true",
@@ -913,7 +810,6 @@ def _replay_single_trace(
             speed_factor=args.speed_factor,
             text_mode=args.text_mode,
             dry_run=args.dry_run,
-            no_stream=not args.stream,
             trace_name=trace_path.name,
             pushgateway_url=args.pushgateway_url,
         )
