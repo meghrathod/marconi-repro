@@ -6,3 +6,18 @@ requires-python = ">=3.11"
 name = "mlsys-marconi"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "sglang-kernel" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "sglang-kernel", specifier = ">=0.4.0" }]
+
+[[package]]
+name = "sglang-kernel"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/d4/08bd7c5ca27df2b9b54660925b155e796e49c9c9b1f90c4a244474cd04ef/sglang_kernel-0.4.0-cp310-abi3-manylinux2014_aarch64.whl", hash = "sha256:72cef0f4d96423fc5c13a986055c53dc69307567ba4f6e62dc4afc04f22d837b", size = 214785154, upload-time = "2026-03-12T10:06:40.156Z" },
+    { url = "https://files.pythonhosted.org/packages/21/ad/fe33ec869e9d72c610d464b5888b3a7397aab9d47b3d2b5d4f7da8cce794/sglang_kernel-0.4.0-cp310-abi3-manylinux2014_x86_64.whl", hash = "sha256:859eb83c312b327d1998ba05b7cfb759d438192117fded43d475ef9f32f284d8", size = 354234812, upload-time = "2026-03-12T10:13:30.527Z" },
+]

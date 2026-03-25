@@ -13,7 +13,7 @@ Two prompt modes:
 
 Directory mode:
   - --trace-dir replays every .jsonl in a directory, saving per-trace
-    results to --output-dir.
+    results to --output-dir. Use --trace-names a.jsonl,b.jsonl for a subset.
 
 Usage:
   # Single trace
@@ -213,9 +213,12 @@ async def send_completion_request(
 ) -> ReplayResult:
     """Send a /v1/completions request.
 
-    Captures ``cached_tokens`` from the ``usage.prompt_tokens_details``
-    field in the response. TTFT is measured as total latency since the
-    entire response arrives at once.
+    Captures ``cached_tokens`` from ``usage.prompt_tokens_details`` only if the
+    server was started with ``--enable-cache-report`` (SGLang defaults to False
+    and omits cached token counts from the JSON).
+
+    TTFT is taken from Prometheus histogram deltas (see replay loop), not from
+    wall-clock of this non-streaming call.
     """
     url = f"{server_url.rstrip('/')}/v1/completions"
     payload = {
@@ -288,21 +291,38 @@ async def send_completion_request(
 def _parse_prometheus_text(text: str) -> dict[str, float]:
     """Parse Prometheus text exposition format into a flat dict.
 
-    Only captures gauge/counter values; ignores histograms and metadata.
+    Histograms emit multiple lines with the same metric name and different labels
+    (e.g. per model_name). We must *sum* ``_sum`` / ``_count`` for TTFT, not keep
+    only the last line — otherwise per-request TTFT deltas stay at zero.
     """
     metrics: dict[str, float] = {}
+    ttft_sum_total = 0.0
+    ttft_count_total = 0.0
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Lines look like: metric_name{labels} value  OR  metric_name value
-        match = re.match(r'^([\w:]+)(?:\{[^}]*\})?\s+([\d.eE+-]+)$', line)
-        if match:
-            name = match.group(1)
-            try:
-                metrics[name] = float(match.group(2))
-            except ValueError:
-                continue
+        # metric_name{labels} value  OR  metric_name value
+        match = re.match(r"^([\w:]+)(?:\{[^}]*\})?\s+([\d.eE+-]+|nan|NaN)$", line)
+        if not match:
+            continue
+        name = match.group(1)
+        raw_val = match.group(2)
+        if raw_val.lower() == "nan":
+            continue
+        try:
+            val = float(raw_val)
+        except ValueError:
+            continue
+        if "time_to_first_token" in name and name.endswith("_sum"):
+            ttft_sum_total += val
+        elif "time_to_first_token" in name and name.endswith("_count"):
+            ttft_count_total += val
+        else:
+            metrics[name] = val
+    if ttft_sum_total > 0.0 or ttft_count_total > 0.0:
+        metrics["sglang:time_to_first_token_seconds_sum"] = ttft_sum_total
+        metrics["sglang:time_to_first_token_seconds_count"] = ttft_count_total
     return metrics
 
 
@@ -505,9 +525,16 @@ async def replay_trace(
             result.num_input_tokens = req.num_input_tokens
             result.num_output_tokens = req.num_output_tokens
 
-            # Compute per-request TTFT from Prometheus metrics delta
+            # Per-request TTFT from Prometheus histogram (seconds → ms).
             cur_ttft = await fetch_server_metrics(session, server_url)
             delta_count = cur_ttft.ttft_count - prev_ttft.ttft_count
+            if delta_count <= 0:
+                for _ in range(5):
+                    await asyncio.sleep(0.03)
+                    cur_ttft = await fetch_server_metrics(session, server_url)
+                    delta_count = cur_ttft.ttft_count - prev_ttft.ttft_count
+                    if delta_count > 0:
+                        break
             if delta_count > 0 and result.ttft_ms == 0.0:
                 result.ttft_ms = (
                     (cur_ttft.ttft_sum - prev_ttft.ttft_sum) / delta_count
@@ -715,7 +742,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--trace-dir",
         default="traces/",
         help="Path to a directory of JSONL trace files. "
-        "All .jsonl files will be replayed.",
+        "All *.jsonl files are replayed unless restricted by --trace-names.",
+    )
+    parser.add_argument(
+        "--trace-names",
+        default=None,
+        metavar="NAMES",
+        help="Comma-separated basenames under --trace-dir only (directory mode). "
+        "Example: lmsys_sps=1_nums=100.jsonl,sharegpt_sps=1_nums=100.jsonl. "
+        "Use this for a fast smoke run before replaying the full trace matrix.",
     )
 
     parser.add_argument(
@@ -837,15 +872,33 @@ def main(argv: list[str] | None = None) -> None:
         _replay_single_trace(args.trace, output_path, args)
 
     elif args.trace_dir:
-        # Directory mode — replay every .jsonl in the directory
+        # Directory mode — replay every .jsonl in the directory (optionally filtered)
         trace_dir = Path(args.trace_dir)
         if not trace_dir.is_dir():
             logger.error("--trace-dir is not a directory: %s", trace_dir)
             sys.exit(1)
 
         trace_files = sorted(trace_dir.glob("*.jsonl"))
+        if args.trace_names:
+            wanted_ordered: list[str] = []
+            seen_names: set[str] = set()
+            for raw in args.trace_names.split(","):
+                n = raw.strip()
+                if n and n not in seen_names:
+                    wanted_ordered.append(n)
+                    seen_names.add(n)
+            by_name = {f.name: f for f in trace_files}
+            missing = set(wanted_ordered) - by_name.keys()
+            if missing:
+                logger.error(
+                    "These --trace-names are not present under %s: %s",
+                    trace_dir,
+                    ", ".join(sorted(missing)),
+                )
+                sys.exit(1)
+            trace_files = [by_name[n] for n in wanted_ordered]
         if not trace_files:
-            logger.error("No .jsonl files found in %s", trace_dir)
+            logger.error("No .jsonl files to replay in %s", trace_dir)
             sys.exit(1)
 
         output_dir = Path(args.output_dir) if args.output_dir else Path("results")
