@@ -1,7 +1,9 @@
 [submodule "marconi"]
 	path = marconi
-	url = https://github.com/ruipeterpan/marconi
+	url = https://github.com/meghrathod/marconi
+	upstream = https://github.com/ruipeterpan/marconi
 [submodule "sglang"]
 	path = sglang
-	url = https://github.com/abdelfattah-lab/sglang.git
+	url = https://github.com/meghrathod/sglang
+	upstream = https://github.com/abdelfattah-lab/sglang.git
 	branch = marconi-integration
