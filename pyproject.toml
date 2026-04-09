@@ -5,5 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "sglang-kernel>=0.4.0",
+    "sglang-kernel>=0.4.0; sys_platform == 'linux'",
+    "transformers>=4.40",
+    "datasets>=2.20",
+    "tqdm",
+    "numpy",
+    "pandas",
+    "pytz",
+    "aiohttp",
+    "prometheus-client",
+    "matplotlib",
+    "scipy",
 ]
