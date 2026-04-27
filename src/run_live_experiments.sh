@@ -16,6 +16,10 @@
 #       marconi at eff_weight=[0.5, 1.0, 1.5, 2.0].
 #       Default output: results/live-phase1/{no-cache,lru,marconi_a0.5,...}/
 #
+#   ./src/run_live_experiments.sh --minimal
+#       Key subset for graph alignment: lmsys/sharegpt sps=0.25,1,5 + swebench sps=1,5 art=5,7.5
+#       Default output: results/live-minimal-32K/{no-cache,lru,marconi}/
+#
 #   ./src/run_live_experiments.sh --trace-names 'a.jsonl,b.jsonl' [--output-dir DIR]
 #       Custom list (any mode); does not imply --limited unless you only pass a few files.
 #
@@ -26,14 +30,18 @@
 
 set -e
 
-MODEL="nvidia/Nemotron-H-8B-Base-8K"
+MODEL="nvidia/Nemotron-H-8B-Reasoning-128K"
 PORT=30000
 SERVER_URL="http://127.0.0.1:${PORT}"
-TRACE_DIR="traces"
+TRACE_DIR="marconi/traces/traces_nemotron_32K"
 UV_RUN=(uv run --project .)
 
 # Default traces for --limited: one file per dataset (multi-turn + cache-friendly load)
 LIMITED_TRACE_NAMES="lmsys_sps=1_nums=100.jsonl,sharegpt_sps=1_nums=100.jsonl,swebench_sps=1_art=5_nums=100.jsonl"
+
+# Default traces for --minimal: low/mid/high pressure per dataset, covers key graph axes
+MINIMAL_TRACE_NAMES="lmsys_sps=0.25_nums=100.jsonl,lmsys_sps=1_nums=100.jsonl,lmsys_sps=5_nums=100.jsonl,sharegpt_sps=0.25_nums=100.jsonl,sharegpt_sps=1_nums=100.jsonl,sharegpt_sps=5_nums=100.jsonl,swebench_sps=1_art=5_nums=100.jsonl,swebench_sps=5_art=5_nums=100.jsonl,swebench_sps=5_art=7.5_nums=100.jsonl"
+MINIMAL_TRACE_DIR="traces_nemotron_32K_minimal"
 
 MODE="full"
 OUTPUT_DIR=""
@@ -47,7 +55,8 @@ usage() {
     sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
     echo ""
     echo "Flags:"
-    echo "  --limited              Subset traces + default output results/live-limited"
+    echo "  --minimal              9 key traces (low/mid/high sps × 3 datasets) → results/live-minimal-32K
+  --limited              Subset traces + default output results/live-limited"
     echo "  --phase1               Alpha calibration on SWEBench sps=5 (see header)"
     echo "  --subset verify        Same as --limited (deprecated alias)"
     echo "  --trace-names LIST     Comma-separated basenames under ${TRACE_DIR}/"
@@ -59,6 +68,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --phase1)
             MODE="phase1"
+            shift
+            ;;
+        --minimal)
+            MODE="minimal"
             shift
             ;;
         --limited)
@@ -95,12 +108,16 @@ done
 
 if [[ "$MODE" == "phase1" ]]; then
     [[ -n "$TRACE_NAMES_ARG" ]] || TRACE_NAMES_ARG="$PHASE1_TRACE"
-    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="results/live-phase1"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="results/live-phase1-32K"
+elif [[ "$MODE" == "minimal" ]]; then
+    TRACE_DIR="$MINIMAL_TRACE_DIR"
+    [[ -n "$TRACE_NAMES_ARG" ]] || TRACE_NAMES_ARG="$MINIMAL_TRACE_NAMES"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="results/live-minimal-32K"
 elif [[ "$MODE" == "limited" ]]; then
     [[ -n "$TRACE_NAMES_ARG" ]] || TRACE_NAMES_ARG="$LIMITED_TRACE_NAMES"
-    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="results/live-limited"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="results/live-limited-32K"
 else
-    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="results/live"
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="results/live-32K"
 fi
 
 LOG_DIR="logs/$(basename "${OUTPUT_DIR}")"
