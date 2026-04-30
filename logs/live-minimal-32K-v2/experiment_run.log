@@ -1,0 +1,50 @@
+==========================================
+  Live experiments  mode=v2 (fixed-alpha sweep)
+  Results         results/live-minimal-32K-v2/{no-cache(copied),lru,marconi_a0.3,marconi_a1.0}/
+  Traces          lmsys_sps=0.25_nums=100.jsonl,lmsys_sps=1_nums=100.jsonl,lmsys_sps=5_nums=100.jsonl,sharegpt_sps=0.25_nums=100.jsonl,sharegpt_sps=1_nums=100.jsonl,sharegpt_sps=5_nums=100.jsonl,swebench_sps=1_art=5_nums=100.jsonl,swebench_sps=5_art=5_nums=100.jsonl,swebench_sps=5_art=7.5_nums=100.jsonl
+  Logs            logs/live-minimal-32K-v2/
+==========================================
+Copied no-cache results from results/live-minimal-32K/no-cache/
+===========================================================
+Experiment: lru
+===========================================================
+Releasing port 30000 and cleaning SGLang processes...
+  port 30000 is free.
+Starting server: lru
+  Server PGID/PID: 55927
+Waiting for port 30000...
+Connection to localhost (127.0.0.1) 30000 port [tcp/*] succeeded!
+Server ready (lru).
+Trace replay...
+Stopping server (PID 55927, config was lru)...
+Releasing port 30000 and cleaning SGLang processes...
+  port 30000 is free.
+===========================================================
+Experiment: marconi_a0.3
+===========================================================
+Releasing port 30000 and cleaning SGLang processes...
+  port 30000 is free.
+Starting server: marconi_a0.3
+  Server PGID/PID: 89343
+Waiting for port 30000...
+Connection to localhost (127.0.0.1) 30000 port [tcp/*] succeeded!
+Server ready (marconi_a0.3).
+Trace replay...
+Stopping server (PID 89343, config was marconi_a0.3)...
+Releasing port 30000 and cleaning SGLang processes...
+  port 30000 is free.
+===========================================================
+Experiment: marconi_a1.0
+===========================================================
+Releasing port 30000 and cleaning SGLang processes...
+  port 30000 is free.
+Starting server: marconi_a1.0
+  Server PGID/PID: 91715
+Waiting for port 30000...
+Connection to localhost (127.0.0.1) 30000 port [tcp/*] succeeded!
+Server ready (marconi_a1.0).
+Trace replay...
+Stopping server (PID 91715, config was marconi_a1.0)...
+Releasing port 30000 and cleaning SGLang processes...
+  port 30000 is free.
+Done. Results: results/live-minimal-32K-v2/  Logs: logs/live-minimal-32K-v2/

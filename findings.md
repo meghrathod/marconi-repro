@@ -254,3 +254,198 @@ Large (0.85): ≈0pp             ← both policies equivalent, no pressure
 **Conclusion:** Marconi is strictly better than LRU on lmsys-style long-session workloads
 whenever the working set exceeds cache capacity. The benefit scales with pressure: the tighter
 the cache, the more each eviction decision matters, and the larger Marconi's advantage.
+
+---
+
+## Experiment 5 — Live server evaluation (live-minimal-32K-v2)
+
+| Setting | Value |
+|---|---|
+| Dataset | lmsys, sharegpt, swebench (100 sessions each) |
+| Server | SGLang with Nemotron-H-8B-Reasoning-128K (4×A100) |
+| Max Mamba slots | 318 (binding constraint) |
+| Configs | LRU, Marconi α=0.3, Marconi α=1.0 |
+| Results | `results/live-minimal-32K-v2/` |
+| Logs | `logs/live-minimal-32K-v2/server_{lru,marconi_a0.3}.log` |
+
+### Performance summary
+
+```
+Dataset                                  LRU hit%   Marc-a0.3   Marc-a1.0   Δ(a0.3−lru)
+------------------------------------------------------------------------------------------
+lmsys sps=0.25 (slow arrival)             67.8%      69.1%       68.2%        +1.3pp
+lmsys sps=1                               59.1%      36.5%       35.5%       −22.6pp ▼
+lmsys sps=5 (fast arrival)                54.9%      41.3%       39.5%       −13.5pp ▼
+sharegpt sps=0.25                         63.6%      61.8%       59.5%        −1.8pp
+sharegpt sps=1                            59.3%      31.5%       29.8%       −27.8pp ▼
+sharegpt sps=5                            57.4%      33.3%       26.2%       −24.0pp ▼
+swebench sps=1                            40.8%      23.4%       21.8%       −17.4pp ▼
+swebench sps=5 art=5                      34.3%      19.9%       18.5%       −14.4pp ▼
+swebench sps=5 art=7.5                    32.7%      18.1%       17.2%       −14.6pp ▼
+```
+
+LRU wins in 8 of 9 configurations. Marconi's only positive result is the slow-arrival lmsys
+setting (+1.3pp), where request interarrival gaps are long enough that Mamba slot pressure
+is rarely the binding constraint.
+
+**Eviction activity (TP0 totals):**
+
+| Policy | Eviction events | Mamba nodes evicted | `evict_full` fires |
+|---|---|---|---|
+| LRU | 23,798 | 41,475 | 0 |
+| Marconi α=0.3 | 11,998 | 21,077 | 0 |
+
+`evict_full` (the KV-token eviction path) never fires in either run. The KV token pool
+(17.26 M tokens, 65.84 GB) is never full; the Mamba slot pool (318 slots) is the sole
+binding constraint throughout.
+
+---
+
+### Finding 5a: SGLang's LRU tombstones branching internal nodes — Marconi cannot
+
+This is the primary cause of LRU's dominance in the live server runs.
+
+**The paper's LRU baseline (`evict_v1` in `marconi/radix_cache_hybrid.py`)** was
+leaf-only: it collected leaves with `_collect_leaves()`, evicted them, and promoted
+a parent to the leaf pool only after all its children were removed. A branching node
+(2+ children) could never be evicted directly — it had to shed children first.
+
+**SGLang's LRU** (`_evict_mamba_lru` in `mamba_radix_cache.py`) walks the
+`mamba_lru_list` from the oldest end and operates differently:
+
+```python
+if len(x.children) > 0:
+    # Internal node: free Mamba slot, tombstone — KV tokens preserved
+    self.req_to_token_pool.mamba_pool.free(x.mamba_value)
+    self._tombstone_internal_node(x)   # mamba_value = None; node stays in tree
+else:
+    # Leaf: evict both Mamba slot and KV tokens
+    self._evict_leaf_node(x, True)
+```
+
+**Branching internal nodes (2+ children) are tombstoned in SGLang's LRU**: the Mamba
+slot is freed and the node's `mamba_value` is cleared, but the node itself and its KV
+tokens remain in the radix tree. Future requests can still get KV hits through that node.
+This is a "free harvest" — recovering a scarce Mamba slot at zero KV cost.
+
+**Marconi's filter** (`_collect_unlocked_candidates` in `mamba_radix_cache.py:915`)
+reads `if len(x.children) <= 1: candidates.append(x)`, which is correct per paper §4.3
+("nodes with multiple children represent the common prefixes shared by multiple requests
+and should not be evicted"). Marconi cannot access branching internal nodes at all.
+
+**In the LRU log, 45,600 of 95,192 total Mamba evictions (48%) are branching internal
+nodes (is_leaf=False).** For each one, a full Mamba slot is recovered while the KV
+prefix survives. Marconi must instead evict a leaf or 1-child internal node, destroying
+both its Mamba slot and its KV tokens.
+
+**Concrete examples from the LRU log:**
+
+```
+ts=3545  | evict lru num: 2 | n_cands=296
+  [0] id=7 toks=6/path=7 age=3526.0 is_leaf=False
+  → 6-token segment freed (Mamba slot reclaimed); 7 KV tokens stay
+
+ts=3804  | evict lru num: 3 | n_cands=298
+  [0] id=72 toks=247/path=9130 age=3340.0 is_leaf=False
+  → 247-token segment freed; 9,130 KV tokens stay in tree
+
+ts=784196| evict lru num: 1 | n_cands=314
+  [0] id=55334 toks=8192/path=17634 age=8416.0 is_leaf=False
+  → 8,192-token segment freed; 17,634 KV tokens stay in tree
+```
+
+The id=55334 event is especially striking: LRU recovers a Mamba slot from a
+17,634-token prefix node without losing a single cached KV token. That prefix remains
+fully searchable in the radix tree — only the Mamba state (needed for recurrent
+state replay) is gone.
+
+**The paper's comparison was:** leaf-only LRU vs Marconi (leaf + 1-child tombstone).
+Marconi's ability to tombstone 1-child internal nodes was a novel advantage over that baseline.
+
+**Our SGLang comparison is:** (leaf + 1-child + branching) LRU vs Marconi (leaf + 1-child).
+LRU now has an additional capability Marconi cannot match. The paper's claimed improvement
+is over a weaker LRU than what SGLang actually implements.
+
+---
+
+### Finding 5b: FLOP efficiency scoring collapses when seqlen_child ≈ 1
+
+From the first Marconi eviction event in the live run (TP0, ts=4306, n_cands=287):
+
+```
+[0] id=9   toks=1/path=145  eff=  747.5 (n=0.00)  rec_n=0.00  util=0.000
+[1] id=12  toks=1/path=14   eff=  762.5 (n=0.00)  rec_n=0.00  util=0.000
+[2] id=188 toks=1/path=15   eff=  762.4 (n=0.00)  rec_n=0.00  util=0.000
+[3] id=223 toks=1/path=14   eff=  762.5 (n=0.00)  rec_n=0.00  util=0.000
+[4] id=155 toks=2/path=19   eff= 1523.8 (n=0.00)  rec_n=0.00  util=0.000
+```
+
+All five candidates have `n=0.00`, meaning they sit at the bottom of the efficiency
+distribution among all 287 candidates. Their `toks` values (1–2) are the segment lengths
+stored in that radix-tree node; `path` is the full prefix length from root.
+
+The FLOP efficiency formula for Mamba layers in `marconi_utils.py` uses `seqlen_child`
+(not `seqlen_total`) for SSM savings:
+```python
+elif layer_type == "linear_attention":
+    flops += get_linear_attn_flops(seqlen_child, ...)  # seqlen_child = toks
+```
+
+When `seqlen_child = 1`, Mamba-layer savings are near-zero for all such nodes. The
+discriminating term becomes the attention layers' quadratic savings
+`(seqlen_total² − seqlen_parent²)`, which depends on path depth — correctly ranking
+deeper nodes higher. The scoring is working as designed: these 1-token segments at
+path=7–19 are legitimately lowest-efficiency.
+
+The visible collapse (`n=0.00`) is the min-max normalization for the five candidates
+shown, all of which are the eviction targets (lowest-ranked). This is not a scoring
+failure — it is the algorithm correctly identifying which nodes to evict.
+
+---
+
+### Finding 5c: Architecture comparison — Nemotron vs Jamba-1.5-Large vs paper's 7B model
+
+Side-by-side comparison (via `AutoConfig` from HuggingFace):
+
+```
+Model                          Layers   SSM   Attn   MLP    SSM:Attn   MoE     Params
+---------------------------------------------------------------------------------------
+Paper primary model (§5)         56     24     4      28      6:1       No       7B
+Nemotron-H-8B-Reasoning-128K     52     24     4      24      6:1       No       8B
+Jamba-Large-1.5 (accessible)     72     63     9       0      7:1   16 exp/2    52B
+Jamba-1.5-Mini                  N/A    N/A   N/A     N/A      —        —        12B  ← gated
+```
+
+Key observations:
+
+**Nemotron-H-8B is architecturally near-identical to the paper's primary 7B model**: both
+have exactly 4 Attention layers and 24 SSM (Mamba) layers (6:1 ratio). Nemotron has 24
+dedicated MLP-only blocks vs the paper's 28 — a 4-layer difference on a 52-layer model.
+The user is correct: there is no fundamental architecture mismatch between our test model
+and the paper's evaluation model.
+
+**Jamba-Large-1.5 is architecturally distinct from both**: 63 SSM + 9 Attention (7:1
+ratio), no standalone MLP layers (the MoE FFN is embedded within each Mamba/Attention
+layer via `expert_layer_period=2`), and 2.6× more SSM layers than either. It is a 52B
+model operating in a different regime. The claim that "Nemotron only has 4 extra SSM
+layers" relative to Jamba doesn't match the data — Jamba-Large-1.5 has 39 more SSM
+layers than Nemotron. The architectural similarity is actually between Nemotron and the
+paper's 7B model, not between Nemotron and Jamba.
+
+**Jamba-1.5-Mini** (the paper's cited secondary model) is not accessible with the
+available credentials (403 on the gated repo), so a direct comparison is not possible.
+
+The primary finding (Finding 5a) is architecture-independent: it is a property of the
+SGLang LRU implementation traversing `mamba_lru_list` without the `len(x.children) <= 1`
+guard. This would disadvantage Marconi equally on any hybrid model.
+
+---
+
+### Root cause summary
+
+| Factor | Impact |
+|---|---|
+| SGLang LRU tombstones branching-internal nodes; Marconi filter excludes them | **Primary** — 48% of LRU Mamba evictions are "free" KV-preserving tombstones |
+| Tight Mamba slot pool (318 slots) with zero KV pool pressure | Amplifies the tombstone advantage: every Mamba slot recovered without KV loss is worth more |
+| Paper's LRU baseline was leaf-only; SGLang's LRU is not | The comparison is against a weaker LRU than what ships in production |
+| FLOP efficiency scoring degenerates for 1-token segments | Secondary — scoring still ranks candidates correctly within the accessible pool |

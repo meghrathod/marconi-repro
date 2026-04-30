@@ -1,6 +1,6 @@
 # Rules for AI Agents
 
-This project is an attempt to reproduce the results of Marconi (https://arxiv.org/pdf/2411.19379), a FLOP-aware prefix caching mechanism and extending its results in a live inference environment. Documentation for our work is located in llm-docs/ directory, it may be outdated so do not rely on it as ground truth.
+This project is an attempt to reproduce the results of Marconi (https://arxiv.org/pdf/2411.19379), a FLOP-aware prefix caching mechanism and extending its results in a live inference environment. 
 
 The experiments designed in the system would be run on a Chameleon GPU instance with Ubuntu 22.04 with one H100 GPU. Any code programmed must be developed with this constraint.
 

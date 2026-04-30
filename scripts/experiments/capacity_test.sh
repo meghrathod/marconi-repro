@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# test_capacity_hypothesis.sh
+# scripts/experiments/capacity_test.sh
 #
-# HYPOTHESIS: Constraining cache to tight capacity makes Marconi beat LRU.
-# At default A100 capacity the cache is ~130x too large → LRU wins.
+# Run LRU vs Marconi at a constrained cache size (--mem-fraction) to measure
+# eviction quality when the working set exceeds cache capacity.
 #
 # Usage:
-#   bash scripts/test_capacity_hypothesis.sh [--mem-fraction 0.22] [--full-capacity]
+#   bash scripts/experiments/capacity_test.sh [--mem-fraction 0.22] [--full-capacity]
 set -e
 
-MODEL="nvidia/Nemotron-H-8B-Base-8K"
+MODEL="nvidia/Nemotron-H-8B-Reasoning-128K"
 PORT=30000
 SERVER_URL="http://127.0.0.1:${PORT}"
 UV_RUN=(uv run --project .)
@@ -32,13 +32,13 @@ LOG_DIR="logs/capacity-test${LABEL_SUFFIX}"
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
 echo "========================================================"
-echo "  HYPOTHESIS: tight cache → Marconi beats LRU"
+echo "  Cache constraint test: LRU vs Marconi at tight capacity"
 echo "  mem-fraction-static : ${MEM_FRACTION}"
 echo "  Trace               : ${TRACE_NAMES}"
 echo "  Output              : ${OUTPUT_DIR}/"
 echo "========================================================"
 
-# ── copy from run_live_experiments.sh ────────────────────────────────────────
+# ── Server management ─────────────────────────────────────────────────────────
 
 free_port_and_sglang() {
     local p=$1
@@ -171,7 +171,7 @@ if "lru" in results and "marconi" in results:
     print(f"  WINNER: {winner}  (Marconi - LRU = {delta:+.1f}pp)  [mem-fraction={mem}]")
     if float(mem) < 0.5:
         if delta > 2:
-            print("  HYPOTHESIS CONFIRMED: tight cache → Marconi wins")
+            print("  Marconi wins at tight capacity")
         elif delta > -2:
             print("  MARGINAL: try --mem-fraction 0.21")
         else:

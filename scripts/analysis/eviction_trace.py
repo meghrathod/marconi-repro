@@ -105,7 +105,7 @@ def parse(log_path, max_evictions=None):
             print(f"  avg protected eff       = {pavg_eff:.4f}")
             print(f"\n  → Marconi evicts nodes with eff={avg_eff:.4f} and protects eff={pavg_eff:.4f}")
             if pavg_eff > avg_eff * 1.2:
-                print("  CONFIRMED: Marconi strongly prefers high-eff (long-path) nodes")
+                print("  Marconi strongly prefers high-eff (long-path) nodes")
 
 
 if __name__ == "__main__":

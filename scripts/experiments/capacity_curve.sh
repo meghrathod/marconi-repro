@@ -11,7 +11,7 @@
 #   bash scripts/experiments/capacity_curve.sh --dataset swebench --nums 20
 set -e
 
-MODEL="nvidia/Nemotron-H-8B-Base-8K"
+MODEL="nvidia/Nemotron-H-8B-Reasoning-128K"
 PORT=30000
 SERVER_URL="http://127.0.0.1:${PORT}"
 UV_RUN=(uv run --project .)
